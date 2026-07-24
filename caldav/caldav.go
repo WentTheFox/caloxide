@@ -30,7 +30,18 @@ type backend struct {
 }
 
 func (b *backend) receiveEvents(events <-chan *protonmail.Event) {
-	// TODO
+	// Drain and log the core event loop. It is mail-focused (Messages/Contacts)
+	// and does not currently surface calendar changes in a parsed form; logging
+	// it lets us confirm whether Proton signals calendar deltas here, which is
+	// the groundwork for a true push-based refresh. Draining also prevents the
+	// events receiver from blocking on send (which the previous no-op did).
+	for ev := range events {
+		if ev == nil {
+			continue
+		}
+		log.Printf("event loop: id=%s refresh=%d messages=%d contacts=%d notices=%d",
+			ev.ID, ev.Refresh, len(ev.Messages), len(ev.Contacts), len(ev.Notices))
+	}
 }
 
 func (b *backend) CreateCalendar(ctx context.Context, calendar *caldav.Calendar) error {

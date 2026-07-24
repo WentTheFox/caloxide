@@ -1,20 +1,29 @@
 package caldav
 
 import (
+	"bytes"
+	"encoding/json"
 	"log"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/emersion/go-ical"
 	"github.com/emersion/go-webdav/caldav"
+	"github.com/mathewcsims/protoxide/config"
 )
 
 // Proton's calendar events endpoint has no working time-range filter and paginates
 // oldest-first, so serving a client query directly means walking every page and
 // decrypting every event on each request — far too slow for a large calendar, and
-// it times the client out. Instead we fetch and decrypt the whole calendar once in
-// the background, serve queries instantly from the decrypted cache, and filter time
-// ranges ourselves.
+// it times the client out. Instead we fetch and decrypt the whole calendar once,
+// persist the decrypted result to disk (so restarts are instant), serve queries
+// from memory, and filter time ranges ourselves.
+//
+// The on-disk cache holds decrypted event data in the user's config directory
+// (0600). This is the same trade-off every local calendar client makes — e.g.
+// Thunderbird's own cache.sqlite — and keeps the data on the user's machine.
 
 const (
 	// How long a fully-loaded cache is served before a background refresh.
@@ -33,6 +42,26 @@ type calendarCache struct {
 	loadedAt time.Time
 }
 
+// persistedObject is the on-disk form of a cached object: the encrypted event has
+// already been decrypted to plain iCalendar text here.
+type persistedObject struct {
+	Path    string
+	ETag    string
+	ModTime time.Time
+	ICS     string
+}
+
+type persistedCache struct {
+	LoadedAt time.Time
+	Objects  map[string]persistedObject
+}
+
+func cacheFilePath(calID string) (string, error) {
+	// calID is URL-safe base64 (may end in "=="), which is filesystem-safe;
+	// strip any stray slash defensively.
+	return config.Path("calcache-" + strings.ReplaceAll(calID, "/", "_") + ".json")
+}
+
 func (b *backend) cacheFor(calID string) *calendarCache {
 	b.cachesMu.Lock()
 	defer b.cachesMu.Unlock()
@@ -40,6 +69,9 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 	if cc == nil {
 		cc = &calendarCache{objects: make(map[string]caldav.CalendarObject)}
 		b.caches[calID] = cc
+		if loadCacheFromDisk(calID, cc) {
+			log.Printf("cache %s: restored %d events from disk", calID, len(cc.objects))
+		}
 	}
 	return cc
 }
@@ -55,9 +87,9 @@ func snapshotObjects(cc *calendarCache) []caldav.CalendarObject {
 }
 
 // cachedObjects returns the decrypted objects for a calendar, triggering a
-// background (re)load when the cache is cold or stale. Only the request that
-// starts a cold load waits (briefly) for data; refreshes and concurrent requests
-// serve the existing snapshot immediately (stale-while-revalidate).
+// background (re)load when the cache is cold or stale. Only a cold load (no data
+// at all, e.g. no disk cache) makes the request wait briefly; a stale refresh and
+// concurrent requests serve the existing snapshot immediately.
 func (b *backend) cachedObjects(calID string) []caldav.CalendarObject {
 	cc := b.cacheFor(calID)
 
@@ -134,6 +166,8 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 	cc.loaded = true
 	cc.loadedAt = time.Now()
 	cc.mu.Unlock()
+
+	saveCacheToDisk(calID, cc)
 	log.Printf("cache %s: loaded %d events", calID, len(fresh))
 }
 
@@ -142,6 +176,7 @@ func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
 	cc.mu.Lock()
 	cc.objects[evtID] = obj
 	cc.mu.Unlock()
+	saveCacheToDisk(calID, cc)
 }
 
 func (b *backend) cacheDelete(calID, evtID string) {
@@ -149,6 +184,7 @@ func (b *backend) cacheDelete(calID, evtID string) {
 	cc.mu.Lock()
 	delete(cc.objects, evtID)
 	cc.mu.Unlock()
+	saveCacheToDisk(calID, cc)
 }
 
 func (b *backend) cacheLookup(calID, evtID string) (caldav.CalendarObject, bool) {
@@ -157,6 +193,78 @@ func (b *backend) cacheLookup(calID, evtID string) (caldav.CalendarObject, bool)
 	defer cc.mu.Unlock()
 	o, ok := cc.objects[evtID]
 	return o, ok
+}
+
+// saveCacheToDisk atomically writes the decrypted cache to the config directory.
+func saveCacheToDisk(calID string, cc *calendarCache) {
+	path, err := cacheFilePath(calID)
+	if err != nil {
+		log.Printf("cache %s: cannot resolve cache path: %v", calID, err)
+		return
+	}
+
+	cc.mu.Lock()
+	pc := persistedCache{
+		LoadedAt: cc.loadedAt,
+		Objects:  make(map[string]persistedObject, len(cc.objects)),
+	}
+	for id, o := range cc.objects {
+		var buf bytes.Buffer
+		if o.Data != nil {
+			if err := ical.NewEncoder(&buf).Encode(o.Data); err != nil {
+				continue
+			}
+		}
+		pc.Objects[id] = persistedObject{Path: o.Path, ETag: o.ETag, ModTime: o.ModTime, ICS: buf.String()}
+	}
+	cc.mu.Unlock()
+
+	data, err := json.Marshal(pc)
+	if err != nil {
+		log.Printf("cache %s: marshal failed: %v", calID, err)
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		log.Printf("cache %s: write failed: %v", calID, err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		log.Printf("cache %s: rename failed: %v", calID, err)
+	}
+}
+
+// loadCacheFromDisk populates cc from a previously-saved cache file, if present.
+func loadCacheFromDisk(calID string, cc *calendarCache) bool {
+	path, err := cacheFilePath(calID)
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var pc persistedCache
+	if err := json.Unmarshal(data, &pc); err != nil {
+		log.Printf("cache %s: on-disk cache unreadable, ignoring: %v", calID, err)
+		return false
+	}
+
+	objs := make(map[string]caldav.CalendarObject, len(pc.Objects))
+	for id, po := range pc.Objects {
+		cal, err := ical.NewDecoder(strings.NewReader(po.ICS)).Decode()
+		if err != nil {
+			continue
+		}
+		objs[id] = caldav.CalendarObject{Path: po.Path, ETag: po.ETag, ModTime: po.ModTime, Data: cal}
+	}
+
+	cc.mu.Lock()
+	cc.objects = objs
+	cc.loaded = true
+	cc.loadedAt = pc.LoadedAt
+	cc.mu.Unlock()
+	return true
 }
 
 // objectInRange reports whether a cached object has a VEVENT overlapping
