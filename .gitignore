@@ -29,6 +29,11 @@ auth.json
 secrets*
 *.token
 protoxide.json
+# Decrypted calendar cache — plaintext event data. Never commit.
+calcache-*.json
+# Any local protoxide config directory checked out into the tree.
+/config-dir/
+/.protoxide/
 
 # OS / editor cruft
 .DS_Store

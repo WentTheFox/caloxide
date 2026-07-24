@@ -56,7 +56,9 @@ func saveAuths(auths map[string]string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get auth file path: %v", err)
 	}
-	f, err := os.Create(p)
+	// 0600: the session (encrypted at rest, but still a long-lived credential)
+	// must not be readable by other local users.
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create cached auth file: %v", err)
 	}
