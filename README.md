@@ -74,7 +74,8 @@ them.
 - **Session durability is not seamless.** The bridge holds a Proton session
   locally. When Proton's access/refresh token expires or is invalidated, the
   bridge stops working and you must re-authenticate (`protoxide auth`). There is
-  no proven long-lived silent refresh yet.
+  no proven long-lived silent refresh yet. If [alerting](#alerting-apprise--ntfy-etc)
+  is configured you'll be notified when this happens.
 - **One-time human verification (CAPTCHA) on login.** Proton's anti-abuse system
   challenges new logins; the `auth` flow opens a browser popup to solve it. This
   is expected on first login and occasionally thereafter.
@@ -166,6 +167,69 @@ the calendar's properties, and set the **refresh interval to 1 minute**.
 
 > Discovering `<your-calendar-id>`: the base CalDAV endpoint lists your
 > calendars; the ID is the last path segment of the calendar's href.
+
+## Running as a service (macOS)
+
+To run the CalDAV bridge headlessly — starting at login, restarting if it
+crashes, and coming back after a reboot — install it as a per-user `launchd`
+agent:
+
+```bash
+# optionally set alerting first (see below)
+./service/install.sh
+```
+
+The installer builds protoxide, copies the binary and a runner into
+`~/Library/Application Support/protoxide/bin/`, writes a LaunchAgent to
+`~/Library/LaunchAgents/com.mathewcsims.protoxide.caldav.plist`, and loads it.
+Re-run it any time to rebuild and reload. Manage it with:
+
+```bash
+launchctl list | grep protoxide          # is it running?
+./service/uninstall.sh                    # remove (add --purge to delete the binary too)
+```
+
+Logs go to `~/Library/Logs/protoxide/caldav.log` (size-rotated at 10 MiB on
+restart). Per-request logging is off unless you run with `-debug`, so the log
+stays small in normal use.
+
+**Prerequisite:** the service uses the encrypted session created by
+`./protoxide auth <your-proton-address>`, which you must run once first (it is
+interactive — CAPTCHA and bridge password). If the Proton session later expires,
+the service can't refresh it silently; you'll need to re-run `auth`.
+
+## Alerting (Apprise → ntfy, etc.)
+
+protoxide can push operational problems to an [Apprise](https://github.com/caronc/apprise)
+endpoint (which can fan out to ntfy and anything else Apprise supports). It's
+**off unless configured** and never blocks or breaks the bridge if the endpoint
+is unreachable. Configure via environment variables (the installer bakes them
+into the LaunchAgent; for a manual run, export them first):
+
+| Variable | Meaning |
+| --- | --- |
+| `PROTOXIDE_APPRISE_URL` | Apprise notify endpoint. For a persistent Apprise config: `http://<host>:8000/notify/<key>`. Required to enable alerts. |
+| `PROTOXIDE_APPRISE_URLS` | Only for Apprise's *stateless* endpoint (`…/notify`): the target URL(s), e.g. `ntfy://<host>/protoxide`. Leave blank when using a `/notify/<key>` config endpoint. |
+
+Alerts are sent (and de-duplicated for 10 minutes per kind, so a persistent
+fault doesn't flood you) for:
+
+- **Auth failure** — a rejected CalDAV request, most often an **expired Proton
+  session** (you'll be told to re-run `auth`).
+- **Inbound poll failing / degraded** — the calendar event-loop poller can't
+  reach Proton (inbound sync stalled — usually also a session issue).
+- **Calendar write failed** — an event couldn't be written back to Proton.
+- **Handler panic** — an unexpected fault while serving a request.
+- **Process crash** — the service was killed by a signal (the runner reports
+  this on the way down; `launchd` then restarts it).
+
+Test your endpoint independently, e.g.:
+
+```bash
+curl -s -H 'Content-Type: application/json' \
+  -d '{"title":"protoxide test","body":"hello","type":"info"}' \
+  "$PROTOXIDE_APPRISE_URL"
+```
 
 ## How it works
 
