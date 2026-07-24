@@ -381,10 +381,13 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 	}
 	event := events[0]
 
+	log.Printf("caldav/PutCalendarObject: writing event (calId=%s, path evtId=%s)", calId, evtId)
 	newEvent, err := b.c.UpdateCalendarEvent(calId, evtId, event, b.privateKeys)
 	if err != nil {
+		log.Printf("caldav/PutCalendarObject: write FAILED (evtId=%s): %v", evtId, err)
 		return nil, fmt.Errorf("caldav/PutCalendarObject: error updating calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
 	}
+	log.Printf("caldav/PutCalendarObject: write OK, proton event id=%s", newEvent.ID)
 
 	path = homeSetPath + calId + formatCalendarObjectPath(newEvent.ID)
 
