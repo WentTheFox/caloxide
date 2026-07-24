@@ -3,6 +3,8 @@ package caldav
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"strings"
@@ -273,6 +275,31 @@ func (cc *calendarCache) applyRecentLocked(m map[string]caldav.CalendarObject) {
 			m[id] = mut.obj
 		}
 	}
+}
+
+// cacheCTag returns a CalendarServer getctag for the calendar: an opaque token
+// derived from the current object set that changes whenever any event is added,
+// edited or removed. It combines a per-object hash of (path, etag) order-
+// independently with the object count, so it is stable across restarts for
+// unchanged content and cheap to recompute on each poll. Returns "" until the
+// cache has completed a load, so no ctag is advertised while cold (the client
+// keeps polling on its interval until real data exists).
+func (b *backend) cacheCTag(calID string) string {
+	cc := b.cacheFor(calID)
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if !cc.loaded {
+		return ""
+	}
+	var acc uint64
+	for _, o := range cc.objects {
+		h := fnv.New64a()
+		h.Write([]byte(o.Path))
+		h.Write([]byte{0})
+		h.Write([]byte(o.ETag))
+		acc += h.Sum64()
+	}
+	return fmt.Sprintf("%016x-%d", acc, len(cc.objects))
 }
 
 func (b *backend) cacheLookup(calID, evtID string) (caldav.CalendarObject, bool) {
