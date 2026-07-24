@@ -826,10 +826,19 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 	// over the stored event (the confirmed upstream write bug). Clients don't
 	// always bump it, so enforce monotonicity here: on update force SEQUENCE to
 	// at least old+1; on create ensure a SEQUENCE:0 is present.
+	// SEQUENCE is an INTEGER property (RFC 5545). It must be emitted as a bare
+	// "SEQUENCE:0" — go-ical's SetText would stamp it "SEQUENCE;VALUE=TEXT:0",
+	// which Proton's server rejects with a 500 while lenient clients tolerate it.
+	// Always Set a plain Prop (no VALUE param), normalising any tagged value the
+	// client may have sent.
 	if isCreate {
-		if event.Props.Get("SEQUENCE") == nil {
-			event.Props.SetText("SEQUENCE", "0")
+		seq := "0"
+		if p := event.Props.Get("SEQUENCE"); p != nil {
+			if n, err := strconv.Atoi(strings.TrimSpace(p.Value)); err == nil {
+				seq = strconv.Itoa(n)
+			}
 		}
+		event.Props.Set(&ical.Prop{Name: "SEQUENCE", Value: seq})
 	} else {
 		incoming := 0
 		if p := event.Props.Get("SEQUENCE"); p != nil {
@@ -841,7 +850,7 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 		if min := eventSequence(oldEvent) + 1; min > next {
 			next = min
 		}
-		event.Props.SetText("SEQUENCE", strconv.Itoa(next))
+		event.Props.Set(&ical.Prop{Name: "SEQUENCE", Value: strconv.Itoa(next)})
 	}
 
 	sharedPartCal, calendarPartCal := getEventParts(&event)

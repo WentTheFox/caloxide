@@ -195,6 +195,23 @@ func (b *backend) cacheLookup(calID, evtID string) (caldav.CalendarObject, bool)
 	return o, ok
 }
 
+// findByToken resolves a CalDAV path token (an iCalendar UID, see objectToken) to
+// the cached object and the Proton event ID it is stored under, by scanning the
+// calendar cache. Proton's write API is keyed by its own event IDs, so this is how
+// a client's UID-based path is mapped back to the ID needed for updates/deletes.
+// Returns ok=false when no cached event carries that token (i.e. a create).
+func (b *backend) findByToken(calID, token string) (caldav.CalendarObject, string, bool) {
+	cc := b.cacheFor(calID)
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	for protonID, o := range cc.objects {
+		if objectToken(o.Data, protonID) == token {
+			return o, protonID, true
+		}
+	}
+	return caldav.CalendarObject{}, "", false
+}
+
 // saveCacheToDisk atomically writes the decrypted cache to the config directory.
 func saveCacheToDisk(calID string, cc *calendarCache) {
 	path, err := cacheFilePath(calID)

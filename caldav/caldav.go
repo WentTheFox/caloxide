@@ -187,7 +187,7 @@ func getCalendarObject(b *backend, calId string, calKr openpgp.KeyRing, event *p
 	}
 
 	co := &caldav.CalendarObject{
-		Path:    homeSetPath + calId + formatCalendarObjectPath(event.ID),
+		Path:    homeSetPath + calId + formatCalendarObjectPath(objectToken(data, event.ID)),
 		ModTime: time.Unix(int64(event.LastEditTime), 0),
 		ETag:    fmt.Sprintf("%X%s", event.LastEditTime, event.ID),
 		Data:    data,
@@ -197,6 +197,33 @@ func getCalendarObject(b *backend, calId string, calKr openpgp.KeyRing, event *p
 
 func formatCalendarObjectPath(id string) string {
 	return "/" + id + ".ics"
+}
+
+// objectToken derives the stable CalDAV path token for an event from its
+// decrypted data. Proton assigns its own opaque event IDs and *reassigns* them
+// when a client-created event is written (the client's chosen path no longer
+// resolves), so we key CalDAV resources by the iCalendar UID instead, which is
+// stable across the round-trip and across cache reloads. Recurrence overrides,
+// which Proton stores as separate events sharing a UID, are disambiguated by
+// their RECURRENCE-ID so each remains a distinct resource. Falls back to the
+// Proton event ID when no UID is present.
+func objectToken(data *ical.Calendar, fallback string) string {
+	if data == nil {
+		return fallback
+	}
+	events := data.Events()
+	if len(events) == 0 {
+		return fallback
+	}
+	uidProp := events[0].Props.Get(ical.PropUID)
+	if uidProp == nil || uidProp.Value == "" {
+		return fallback
+	}
+	uid := uidProp.Value
+	if rid := events[0].Props.Get(ical.PropRecurrenceID); rid != nil && rid.Value != "" {
+		return uid + "-" + rid.Value
+	}
+	return uid
 }
 
 func (b *backend) CalendarHomeSetPath(ctx context.Context) (string, error) {
@@ -283,13 +310,17 @@ func (b *backend) GetCalendarObject(ctx context.Context, path string, req *calda
 		return nil, fmt.Errorf("caldav/GetCalendarObject: bad path %s", path)
 	}
 
-	calId, evtId := splitIds[0], splitIds[1]
+	calId, token := splitIds[0], splitIds[1]
 
-	// Serve from the decrypted cache when possible.
-	if o, ok := b.cacheLookup(calId, evtId); ok {
+	// Serve from the decrypted cache when possible. The path token is the event's
+	// iCalendar UID (objectToken); resolve it against the cache.
+	if o, _, ok := b.findByToken(calId, token); ok {
 		return &o, nil
 	}
 
+	// Cache miss: fall back to fetching by ID in case the token happens to be a
+	// Proton event ID rather than a UID.
+	evtId := token
 	event, err := b.c.GetCalendarEvent(calId, evtId)
 	if err != nil {
 		return nil, fmt.Errorf("caldav/GetCalendarObject: error getting calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
@@ -373,7 +404,7 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 		return nil, fmt.Errorf("caldav/PutCalendarObject: bad path %s", path)
 	}
 
-	calId, evtId := splitIds[0], splitIds[1]
+	calId, token := splitIds[0], splitIds[1]
 
 	events := calendar.Events()
 	if len(events) != 1 {
@@ -381,15 +412,30 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 	}
 	event := events[0]
 
-	log.Printf("caldav/PutCalendarObject: writing event (calId=%s, path evtId=%s)", calId, evtId)
-	newEvent, err := b.c.UpdateCalendarEvent(calId, evtId, event, b.privateKeys)
+	// The path token is the client's chosen UID. Resolve it to an existing Proton
+	// event ID: if found this is an update (pass the Proton ID so UpdateCalendarEvent
+	// edits in place); otherwise it's a create (pass the token, which Proton reports
+	// as an unknown ID → create). Passing the UID on an update would be seen as an
+	// unknown ID and would create a duplicate, so the resolution is essential.
+	evtArg := token
+	isUpdate := false
+	if _, protonID, ok := b.findByToken(calId, token); ok {
+		evtArg = protonID
+		isUpdate = true
+	}
+
+	log.Printf("caldav/PutCalendarObject: writing event (calId=%s, token=%s, update=%v)", calId, token, isUpdate)
+	newEvent, err := b.c.UpdateCalendarEvent(calId, evtArg, event, b.privateKeys)
 	if err != nil {
-		log.Printf("caldav/PutCalendarObject: write FAILED (evtId=%s): %v", evtId, err)
-		return nil, fmt.Errorf("caldav/PutCalendarObject: error updating calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
+		log.Printf("caldav/PutCalendarObject: write FAILED (token=%s): %v", token, err)
+		return nil, fmt.Errorf("caldav/PutCalendarObject: error updating calendar event (calId: %s, token: %s): (%w)", calId, token, err)
 	}
 	log.Printf("caldav/PutCalendarObject: write OK, proton event id=%s", newEvent.ID)
 
-	path = homeSetPath + calId + formatCalendarObjectPath(newEvent.ID)
+	// Serve the object at the stable UID-derived path the client used, so it is
+	// recognised on the next sync and survives a full cache reload (which re-keys
+	// the in-memory cache by Proton ID but recomputes the same UID path).
+	path = homeSetPath + calId + formatCalendarObjectPath(objectToken(calendar, newEvent.ID))
 
 	obj := caldav.CalendarObject{
 		Path:    path,
@@ -417,7 +463,14 @@ func (b *backend) DeleteCalendarObject(ctx context.Context, path string) error {
 		return fmt.Errorf("caldav/DeleteCalendarObject: bad path %s", path)
 	}
 
-	calId, evtId := splitIds[0], splitIds[1]
+	calId, token := splitIds[0], splitIds[1]
+
+	// Resolve the UID path token to the Proton event ID the delete API needs.
+	// Fall back to treating the token itself as the ID (legacy / uncached).
+	evtId := token
+	if _, protonID, ok := b.findByToken(calId, token); ok {
+		evtId = protonID
+	}
 
 	if err := b.c.DeleteCalendarEvent(calId, evtId); err != nil {
 		return fmt.Errorf("caldav/DeleteCalendarObject: error deleting calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
