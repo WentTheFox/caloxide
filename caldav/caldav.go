@@ -3,6 +3,7 @@ package caldav
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -210,21 +211,50 @@ func formatCalendarObjectPath(id string) string {
 // Proton event ID when no UID is present.
 func objectToken(data *ical.Calendar, fallback string) string {
 	if data == nil {
-		return fallback
+		return safeSegment(fallback)
 	}
 	events := data.Events()
 	if len(events) == 0 {
-		return fallback
+		return safeSegment(fallback)
 	}
 	uidProp := events[0].Props.Get(ical.PropUID)
 	if uidProp == nil || uidProp.Value == "" {
-		return fallback
+		return safeSegment(fallback)
 	}
-	uid := uidProp.Value
+	token := safeSegment(uidProp.Value)
 	if rid := events[0].Props.Get(ical.PropRecurrenceID); rid != nil && rid.Value != "" {
-		return uid + "-" + rid.Value
+		token += "~" + safeSegment(rid.Value)
 	}
-	return uid
+	return token
+}
+
+// safeSegment returns s if it is usable verbatim as a single URL path segment and
+// XML text, otherwise a hex-encoded, namespaced form that always is. UIDs from
+// clients use the safe set (so a client-created event round-trips to the same
+// href), but UIDs from imported/Proton-side events can contain '/', ':', '|',
+// quotes or spaces, which break the href in the multistatus and the path parsing.
+// Encoding need not be reversible: the token is matched by recomputation
+// (findByToken), so both sides derive the same value from the same event.
+func safeSegment(s string) string {
+	if isURLSafe(s) {
+		return s
+	}
+	return "enc." + hex.EncodeToString([]byte(s))
+}
+
+func isURLSafe(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '~' || r == '@' || r == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (b *backend) CalendarHomeSetPath(ctx context.Context) (string, error) {
