@@ -3,6 +3,7 @@ package protonmail
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -982,7 +983,11 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 func (c *Client) UpdateCalendarEvent(calID string, eventID string, event ical.Event, userKr openpgp.KeyRing) (*CalendarEvent, error) {
 	oldEvent, err := c.GetCalendarEvent(calID, eventID)
 	isCreate := false
-	if apiErr, ok := err.(*APIError); ok && apiErr.Code == 2061 {
+	// GetCalendarEvent wraps the API error, so match with errors.As rather than a
+	// direct type assertion. Code 2061 ("not a valid ID") means the event does not
+	// exist yet — i.e. this is a create, not an update.
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == 2061 {
 		isCreate = true
 	} else if err != nil {
 		return nil, fmt.Errorf("UpdateCalendarEvent: could not get old calendar event: (%w)", err)
