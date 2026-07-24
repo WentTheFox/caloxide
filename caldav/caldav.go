@@ -23,6 +23,9 @@ type backend struct {
 	privateKeys openpgp.EntityList
 	keyCache    map[string]openpgp.EntityList
 	locker      sync.Mutex
+
+	caches   map[string]*calendarCache
+	cachesMu sync.Mutex
 }
 
 func (b *backend) receiveEvents(events <-chan *protonmail.Event) {
@@ -266,6 +269,12 @@ func (b *backend) GetCalendarObject(ctx context.Context, path string, req *calda
 	}
 
 	calId, evtId := splitIds[0], splitIds[1]
+
+	// Serve from the decrypted cache when possible.
+	if o, ok := b.cacheLookup(calId, evtId); ok {
+		return &o, nil
+	}
+
 	event, err := b.c.GetCalendarEvent(calId, evtId)
 	if err != nil {
 		return nil, fmt.Errorf("caldav/GetCalendarObject: error getting calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
@@ -298,36 +307,10 @@ func (b *backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 	calId, _ := strings.CutSuffix(path, "/")
 	calId, _ = strings.CutPrefix(calId, homeSetPath)
 
-	events, err := b.c.ListAllCalendarEvents(calId, nil)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/ListCalendarObjects: error listing calendar events for calId %s: (%w)", calId, err)
-	}
-
-	bootstrap, err := b.c.BootstrapCalendar(calId)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/ListCalendarObjects: error bootstrapping calendar (calId: %s): (%w)", calId, err)
-	}
-
-	calKr, err := bootstrap.DecryptKeyring(b.privateKeys)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/ListCalendarObjects: error decrypting keyring: (%w)", err)
-	}
-
-	cos := make([]caldav.CalendarObject, len(events))
-	for i, event := range events {
-		co, err := getCalendarObject(b, calId, calKr, event, bootstrap.CalendarSettings)
-		if err != nil {
-			return nil, fmt.Errorf("caldav/ListCalendarObjects: error creating calendar object for event %d: (%w)", i, err)
-		}
-
-		cos[i] = *co
-	}
-
-	return cos, nil
+	return b.cachedObjects(calId), nil
 }
 
 func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *caldav.CalendarQuery) ([]caldav.CalendarObject, error) {
-	//TODO caldav backend lib inefficient for not passing query comprequest, possibly bump go-caldav but need to resolve breaking changes on carddav (would also allow create calendar support)
 	homeSetPath, err := b.CalendarHomeSetPath(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error getting calendar home set path: (%w)", err)
@@ -344,38 +327,19 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 	}
 	cf := &query.CompFilter.Comps[0]
 
-	filter := protonmail.CalendarEventFilter{
-		Start:    protonmail.NewTimestamp(cf.Start),
-		End:      protonmail.NewTimestamp(cf.End),
-		Timezone: cf.Start.Location().String(),
-	}
+	all := b.cachedObjects(calId)
 
-	events, err := b.c.ListAllCalendarEvents(calId, &filter)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error listing calendar events for calId %s: (%w)", calId, err)
+	// Proton ignores server-side time filtering, so we filter the cache here.
+	if cf.Start.IsZero() && cf.End.IsZero() {
+		return all, nil
 	}
-
-	bootstrap, err := b.c.BootstrapCalendar(calId)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error bootstrapping calendar (calId: %s): (%w)", calId, err)
-	}
-
-	calKr, err := bootstrap.DecryptKeyring(b.privateKeys)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error decrypting keyring: (%w)", err)
-	}
-
-	cos := make([]caldav.CalendarObject, len(events))
-	for i, event := range events {
-		co, err := getCalendarObject(b, calId, calKr, event, bootstrap.CalendarSettings)
-		if err != nil {
-			return nil, fmt.Errorf("caldav/QueryCalendarObjects: error creating calendar object for event %d: (%w)", i, err)
+	out := make([]caldav.CalendarObject, 0, len(all))
+	for _, o := range all {
+		if objectInRange(o, cf.Start, cf.End) {
+			out = append(out, o)
 		}
-
-		cos[i] = *co
 	}
-
-	return cos, nil
+	return out, nil
 }
 
 func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *caldav.PutCalendarObjectOptions) (loc *caldav.CalendarObject, err error) {
@@ -409,11 +373,16 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 
 	path = homeSetPath + calId + formatCalendarObjectPath(newEvent.ID)
 
-	return &caldav.CalendarObject{
+	obj := caldav.CalendarObject{
 		Path:    path,
 		ModTime: newEvent.ModifyTime.Time(),
+		ETag:    fmt.Sprintf("%X%s", newEvent.LastEditTime, newEvent.ID),
 		Data:    calendar,
-	}, nil
+	}
+	// Keep the cache consistent with the write so the new/updated event is
+	// visible immediately without waiting for a background refresh.
+	b.cacheStore(calId, newEvent.ID, obj)
+	return &obj, nil
 }
 
 func (b *backend) DeleteCalendarObject(ctx context.Context, path string) error {
@@ -436,6 +405,7 @@ func (b *backend) DeleteCalendarObject(ctx context.Context, path string) error {
 		return fmt.Errorf("caldav/DeleteCalendarObject: error deleting calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
 	}
 
+	b.cacheDelete(calId, evtId)
 	return nil
 }
 
@@ -453,6 +423,7 @@ func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username s
 		c:           c,
 		privateKeys: privateKeys,
 		keyCache:    keyCache,
+		caches:      make(map[string]*calendarCache),
 	}
 
 	if events != nil {
