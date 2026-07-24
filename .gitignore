@@ -1,0 +1,35 @@
+# Binaries for programs and plugins
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Project-local glide cache, RE: https://github.com/Masterminds/glide/issues/736
+.glide/
+
+auth.json
+
+# Built binary
+/protoxide
+/cmd/protoxide/protoxide
+
+# Runtime auth / session / local state — MUST never be committed.
+# (The real config dir lives outside the repo, under $XDG_CONFIG_HOME/protoxide;
+#  these patterns are defensive in case anything is ever run from the tree.)
+*.db
+*.bolt
+*.key
+*.pem
+secrets*
+*.token
+protoxide.json
+
+# OS / editor cruft
+.DS_Store
+*.swp
