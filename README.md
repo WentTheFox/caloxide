@@ -198,6 +198,26 @@ stays small in normal use.
 interactive — CAPTCHA and bridge password). If the Proton session later expires,
 the service can't refresh it silently; you'll need to re-run `auth`.
 
+### Running a manual session (debugging)
+
+Once the service is installed it is the **only** thing that should bind
+`127.0.0.1:8081`. If you start protoxide by hand while the service is running,
+the second instance will fail to bind the port and (under launchd) crash-loop.
+So **stop the service first**, run your manual session, then start it again:
+
+```bash
+PLIST=~/Library/LaunchAgents/com.mathewcsims.protoxide.caldav.plist
+
+launchctl unload "$PLIST"          # stop the managed service
+./protoxide -debug caldav          # manual session with verbose per-request logs
+                                   # (Ctrl-C to stop)
+launchctl load -w "$PLIST"         # hand control back to the service
+```
+
+Use `-debug` for the verbose per-request logging that is otherwise suppressed.
+The manual instance shares the same on-disk cache and session as the service, so
+nothing needs re-syncing when you switch back.
+
 ## Alerting (Apprise → ntfy, etc.)
 
 protoxide can push operational problems to an [Apprise](https://github.com/caronc/apprise)
