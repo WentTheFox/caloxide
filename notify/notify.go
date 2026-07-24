@@ -65,8 +65,24 @@ func SendSync(typ, title, body string) {
 	post(typ, title, body)
 }
 
+// emojiPrefix matches the self-hosted stack's notification convention of
+// prefixing the title with a severity emoji for at-a-glance scanning in the
+// shared Discord/ntfy feed.
+func emojiPrefix(typ string) string {
+	switch typ {
+	case "failure":
+		return "🚫 "
+	case "warning":
+		return "⚠️ "
+	case "success":
+		return "✅ "
+	default:
+		return "🔔 "
+	}
+}
+
 func post(typ, title, body string) {
-	payload := map[string]string{"title": title, "body": body, "type": typ}
+	payload := map[string]string{"title": emojiPrefix(typ) + title, "body": body, "type": typ}
 	if urls := os.Getenv("PROTOXIDE_APPRISE_URLS"); urls != "" {
 		payload["urls"] = urls
 	}
