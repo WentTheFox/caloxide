@@ -384,7 +384,9 @@ func (b *backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 	calId, _ := strings.CutSuffix(path, "/")
 	calId, _ = strings.CutPrefix(calId, homeSetPath)
 
-	return b.cachedObjects(calId), nil
+	objs := b.cachedObjects(calId)
+	log.Printf("caldav/ListCalendarObjects: returning %d objects", len(objs))
+	return objs, nil
 }
 
 func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *caldav.CalendarQuery) ([]caldav.CalendarObject, error) {
@@ -408,6 +410,7 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 
 	// Proton ignores server-side time filtering, so we filter the cache here.
 	if cf.Start.IsZero() && cf.End.IsZero() {
+		log.Printf("caldav/QueryCalendarObjects: no time filter, returning all %d objects", len(all))
 		return all, nil
 	}
 	out := make([]caldav.CalendarObject, 0, len(all))
@@ -416,6 +419,8 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 			out = append(out, o)
 		}
 	}
+	log.Printf("caldav/QueryCalendarObjects: time filter [%s .. %s], returning %d of %d objects",
+		cf.Start.Format(time.RFC3339), cf.End.Format(time.RFC3339), len(out), len(all))
 	return out, nil
 }
 

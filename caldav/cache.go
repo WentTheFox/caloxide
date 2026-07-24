@@ -54,10 +54,23 @@ type recentMutation struct {
 type calendarCache struct {
 	mu       sync.Mutex
 	objects  map[string]caldav.CalendarObject // keyed by Proton event ID
+	byToken  map[string]string                // CalDAV path token -> Proton event ID
 	recent   map[string]recentMutation        // local writes/deletes, keyed by Proton event ID
 	loaded   bool
 	loading  bool
 	loadedAt time.Time
+}
+
+// buildTokenIndex derives the path-token -> Proton-ID index for a set of objects.
+// Tokens are unique per object (see objectToken), so lookups by token are O(1)
+// instead of scanning every event — critical for calendar-multiget, which fetches
+// one object per href and would otherwise be O(n^2) over the whole calendar.
+func buildTokenIndex(objs map[string]caldav.CalendarObject) map[string]string {
+	idx := make(map[string]string, len(objs))
+	for id, o := range objs {
+		idx[objectToken(o.Data, id)] = id
+	}
+	return idx
 }
 
 // persistedObject is the on-disk form of a cached object: the encrypted event has
@@ -87,6 +100,7 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 	if cc == nil {
 		cc = &calendarCache{
 			objects: make(map[string]caldav.CalendarObject),
+			byToken: make(map[string]string),
 			recent:  make(map[string]recentMutation),
 		}
 		b.caches[calID] = cc
@@ -185,6 +199,7 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 		// fill in rather than waiting for the entire decrypt to finish.
 		cc.mu.Lock()
 		cc.objects[event.ID] = *co
+		cc.byToken[objectToken(co.Data, event.ID)] = event.ID
 		cc.mu.Unlock()
 	}
 
@@ -195,6 +210,7 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 	cc.mu.Lock()
 	cc.applyRecentLocked(fresh)
 	cc.objects = fresh
+	cc.byToken = buildTokenIndex(fresh)
 	cc.loaded = true
 	cc.loadedAt = time.Now()
 	cc.mu.Unlock()
@@ -207,6 +223,7 @@ func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
 	cc := b.cacheFor(calID)
 	cc.mu.Lock()
 	cc.objects[evtID] = obj
+	cc.byToken[objectToken(obj.Data, evtID)] = evtID
 	cc.recent[evtID] = recentMutation{obj: obj, at: time.Now()}
 	persist := cc.loaded && !cc.loading
 	cc.mu.Unlock()
@@ -222,6 +239,9 @@ func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
 func (b *backend) cacheDelete(calID, evtID string) {
 	cc := b.cacheFor(calID)
 	cc.mu.Lock()
+	if o, ok := cc.objects[evtID]; ok {
+		delete(cc.byToken, objectToken(o.Data, evtID))
+	}
 	delete(cc.objects, evtID)
 	cc.recent[evtID] = recentMutation{deleted: true, at: time.Now()}
 	persist := cc.loaded && !cc.loading
@@ -256,21 +276,24 @@ func (b *backend) cacheLookup(calID, evtID string) (caldav.CalendarObject, bool)
 	return o, ok
 }
 
-// findByToken resolves a CalDAV path token (an iCalendar UID, see objectToken) to
-// the cached object and the Proton event ID it is stored under, by scanning the
-// calendar cache. Proton's write API is keyed by its own event IDs, so this is how
-// a client's UID-based path is mapped back to the ID needed for updates/deletes.
-// Returns ok=false when no cached event carries that token (i.e. a create).
+// findByToken resolves a CalDAV path token (see objectToken) to the cached object
+// and the Proton event ID it is stored under, via the byToken index (O(1)).
+// Proton's write API is keyed by its own event IDs, so this is how a client's
+// token-based path is mapped back to the ID needed for updates/deletes. Returns
+// ok=false when no cached event carries that token (i.e. a create).
 func (b *backend) findByToken(calID, token string) (caldav.CalendarObject, string, bool) {
 	cc := b.cacheFor(calID)
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	for protonID, o := range cc.objects {
-		if objectToken(o.Data, protonID) == token {
-			return o, protonID, true
-		}
+	protonID, ok := cc.byToken[token]
+	if !ok {
+		return caldav.CalendarObject{}, "", false
 	}
-	return caldav.CalendarObject{}, "", false
+	o, ok := cc.objects[protonID]
+	if !ok {
+		return caldav.CalendarObject{}, "", false
+	}
+	return o, protonID, true
 }
 
 // saveCacheToDisk atomically writes the decrypted cache to the config directory.
@@ -339,6 +362,7 @@ func loadCacheFromDisk(calID string, cc *calendarCache) bool {
 
 	cc.mu.Lock()
 	cc.objects = objs
+	cc.byToken = buildTokenIndex(objs)
 	cc.loaded = true
 	cc.loadedAt = pc.LoadedAt
 	cc.mu.Unlock()
