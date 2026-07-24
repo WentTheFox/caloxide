@@ -29,6 +29,7 @@ import (
 	"github.com/mathewcsims/protoxide/exports"
 	imapbackend "github.com/mathewcsims/protoxide/imap"
 	"github.com/mathewcsims/protoxide/imports"
+	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
 	smtpbackend "github.com/mathewcsims/protoxide/smtp"
 )
@@ -174,7 +175,21 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 		Addr:      addr,
 		TLSConfig: tlsConfig,
 		Handler: http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
-			log.Printf("CalDAV <- %s %s", req.Method, req.URL.Path)
+			// A panic in a handler is otherwise swallowed by net/http (logged, then
+			// the connection is dropped) and would go unnoticed. Recover, alert, and
+			// return a 500 so the fault is visible.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("CalDAV: recovered panic on %s %s: %v", req.Method, req.URL.Path, r)
+					notify.Send("failure", "caldav-panic", "protoxide: CalDAV handler panic",
+						fmt.Sprintf("%s %s panicked: %v", req.Method, req.URL.Path, r))
+					resp.WriteHeader(http.StatusInternalServerError)
+				}
+			}()
+
+			if debug {
+				log.Printf("CalDAV <- %s %s", req.Method, req.URL.Path)
+			}
 			resp.Header().Set("WWW-Authenticate", "Basic")
 
 			username, password, ok := req.BasicAuth()
@@ -188,9 +203,16 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 			c, privateKeys, err := authManager.Auth(username, password)
 			if err != nil {
 				if err == auth.ErrUnauthorized {
+					// Most likely an expired/invalidated Proton session — the client's
+					// password is fixed, so this appearing after it worked means re-auth
+					// is needed. Debounced so a broken session doesn't flood.
 					resp.WriteHeader(http.StatusUnauthorized)
+					notify.Send("failure", "caldav-auth", "protoxide: CalDAV auth failed",
+						fmt.Sprintf("Rejected %s for %q — the Proton session may have expired; run `protoxide auth %s`.", req.Method, username, username))
 				} else {
 					resp.WriteHeader(http.StatusInternalServerError)
+					notify.Send("failure", "caldav-auth-err", "protoxide: CalDAV auth error",
+						fmt.Sprintf("Error authenticating %q: %v", username, err))
 				}
 				io.WriteString(resp, err.Error())
 				return
@@ -672,9 +694,15 @@ func main() {
 		log.Fatal(listenAndServeIMAP(addr, debug, authManager, eventsManager, tlsConfig))
 	case "caldav":
 		addr := *caldavHost + ":" + *caldavPort
+		caldav.Debug = debug
 		authManager := auth.NewManager(newClient)
 		eventsManager := events.NewManager()
-		log.Fatal(listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig))
+		err := listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig)
+		// Only reached if the server stops. Alert before exiting so a restart
+		// (e.g. by launchd) is visible rather than silent.
+		notify.SendSync("failure", "protoxide: CalDAV server stopped",
+			fmt.Sprintf("The CalDAV server exited: %v", err))
+		log.Fatal(err)
 	case "carddav":
 		addr := *carddavHost + ":" + *carddavPort
 		authManager := auth.NewManager(newClient)

@@ -17,9 +17,16 @@ import (
 	"github.com/emersion/go-ical"
 	webdav "github.com/emersion/go-webdav"
 	"github.com/emersion/go-webdav/caldav"
+	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
 	"github.com/mathewcsims/protoxide/utils"
 )
+
+// Debug, when true, enables verbose per-request logging (object counts, cache
+// misses). It is off by default so a long-running service doesn't produce an
+// unbounded log; meaningful events (writes, poller changes, cache loads, errors,
+// auth failures) are always logged. Set via the -debug flag in main.
+var Debug bool
 
 type backend struct {
 	c           *protonmail.Client
@@ -391,7 +398,9 @@ func (b *backend) GetCalendarObject(ctx context.Context, path string, req *calda
 	if o, _, ok := b.findByToken(calId, token); ok {
 		return &o, nil
 	}
-	log.Printf("caldav/GetCalendarObject: cache MISS token=%s, falling back to Proton fetch", token)
+	if Debug {
+		log.Printf("caldav/GetCalendarObject: cache MISS token=%s, falling back to Proton fetch", token)
+	}
 
 	// Cache miss: fall back to fetching by ID in case the token happens to be a
 	// Proton event ID rather than a UID.
@@ -435,7 +444,9 @@ func (b *backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 		log.Printf("caldav/ListCalendarObjects: calendar still loading, asking client to retry")
 		return nil, webdav.NewHTTPError(http.StatusServiceUnavailable, fmt.Errorf("caldav: calendar still loading"))
 	}
-	log.Printf("caldav/ListCalendarObjects: returning %d objects", len(objs))
+	if Debug {
+		log.Printf("caldav/ListCalendarObjects: returning %d objects", len(objs))
+	}
 	return objs, nil
 }
 
@@ -464,7 +475,9 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 
 	// Proton ignores server-side time filtering, so we filter the cache here.
 	if cf.Start.IsZero() && cf.End.IsZero() {
-		log.Printf("caldav/QueryCalendarObjects: no time filter, returning all %d objects", len(all))
+		if Debug {
+			log.Printf("caldav/QueryCalendarObjects: no time filter, returning all %d objects", len(all))
+		}
 		return all, nil
 	}
 	out := make([]caldav.CalendarObject, 0, len(all))
@@ -473,8 +486,10 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 			out = append(out, o)
 		}
 	}
-	log.Printf("caldav/QueryCalendarObjects: time filter [%s .. %s], returning %d of %d objects",
-		cf.Start.Format(time.RFC3339), cf.End.Format(time.RFC3339), len(out), len(all))
+	if Debug {
+		log.Printf("caldav/QueryCalendarObjects: time filter [%s .. %s], returning %d of %d objects",
+			cf.Start.Format(time.RFC3339), cf.End.Format(time.RFC3339), len(out), len(all))
+	}
 	return out, nil
 }
 
@@ -527,6 +542,8 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 	newEvent, err := b.c.UpdateCalendarEvent(calId, evtArg, writeEvent, b.privateKeys)
 	if err != nil {
 		log.Printf("caldav/PutCalendarObject: write FAILED (token=%s): %v", token, err)
+		notify.Send("failure", "caldav-write", "protoxide: calendar write failed",
+			fmt.Sprintf("Writing an event to Proton failed: %v", err))
 		return nil, fmt.Errorf("caldav/PutCalendarObject: error updating calendar event (calId: %s, token: %s): (%w)", calId, token, err)
 	}
 	log.Printf("caldav/PutCalendarObject: write OK, proton event id=%s", newEvent.ID)

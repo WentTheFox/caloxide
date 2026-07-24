@@ -1,9 +1,11 @@
 package caldav
 
 import (
+	"fmt"
 	"log"
 	"time"
 
+	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
 )
 
@@ -21,6 +23,8 @@ func (b *backend) pollCalendar(calID string) {
 	cursor, err := b.c.GetLatestCalendarModelEventID(calID)
 	if err != nil {
 		log.Printf("poller %s: could not seed cursor, delta sync disabled (falling back to periodic reload): %v", calID, err)
+		notify.Send("warning", "poller-seed", "protoxide: inbound sync degraded",
+			fmt.Sprintf("Could not start the calendar event-loop poller: %v. Inbound changes will only appear on the 30-minute reload.", err))
 		return
 	}
 	log.Printf("poller %s: started, cursor seeded", calID)
@@ -33,6 +37,8 @@ func (b *backend) pollCalendar(calID string) {
 			evs, err := b.c.GetCalendarModelEvents(calID, cursor)
 			if err != nil {
 				log.Printf("poller %s: poll failed: %v", calID, err)
+				notify.Send("warning", "poller-poll", "protoxide: inbound poll failing",
+					fmt.Sprintf("Polling Proton's calendar event loop failed: %v. Inbound sync is stalled; this often means the Proton session needs refreshing.", err))
 				break
 			}
 
