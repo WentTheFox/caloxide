@@ -124,6 +124,12 @@ func toIcalCalendar(event *protonmail.CalendarEvent, userKr openpgp.KeyRing, cal
 
 func getCalendarObject(b *backend, calId string, calKr openpgp.KeyRing, event *protonmail.CalendarEvent, settings protonmail.CalendarSettings) (*caldav.CalendarObject, error) {
 	userKr, exists := b.keyCache[event.Author]
+	if event.Author == "" {
+		// Events authored by the account owner can come back with no Author set;
+		// verify them with the account's own keys rather than fetching public keys
+		// for an empty address (which the API rejects with "The Email is required").
+		userKr, exists = b.privateKeys, true
+	}
 	if !exists {
 		userKeys, err := b.c.GetPublicKeys(event.Author)
 		if err != nil {
