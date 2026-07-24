@@ -121,6 +121,17 @@ func EncryptAndSave(auth *CachedAuth, username string, secretKey *[32]byte) erro
 }
 
 func authenticate(c *protonmail.Client, cachedAuth *CachedAuth, username string) (openpgp.EntityList, error) {
+	// Use the stored access token directly first. Refreshing prematurely discards
+	// a still-valid token, and Proton's refresh endpoint is currently unreliable
+	// for third-party sessions; the client's own 401 handler will refresh only
+	// once the token has actually expired.
+	if cachedAuth.Auth.AccessToken != "" {
+		c.SetSession(cachedAuth.Auth.UID, cachedAuth.Auth.AccessToken)
+		if keyRing, err := c.Unlock(&cachedAuth.Auth, cachedAuth.KeySalts, cachedAuth.MailboxPassword); err == nil {
+			return keyRing, nil
+		}
+	}
+
 	auth, err := c.AuthRefresh(&cachedAuth.Auth)
 	if apiErr, ok := err.(*protonmail.APIError); ok && apiErr.Code == 10013 {
 		// Invalid refresh token, re-authenticate
