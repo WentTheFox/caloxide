@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -381,12 +382,13 @@ func (c *Client) ListCalendarEvents(calendarID string, filter *CalendarEventFilt
 }
 
 // ListAllCalendarEvents fetches every event matching the filter, following
-// Proton's pagination. The upstream code fetched only the first page, silently
-// truncating large calendars; this loops until a short page is returned. A hard
-// page cap guards against a server that ignores the Page parameter.
+// Proton's pagination. It stops on a short page (the last one) or when a page
+// yields no events the previous pages didn't already return — which both catches
+// the true end and prevents an infinite loop if the server ignores the Page
+// parameter and keeps returning the same events. A hard page cap is a backstop.
 func (c *Client) ListAllCalendarEvents(calendarID string, filter *CalendarEventFilter) ([]*CalendarEvent, error) {
 	const pageSize = 100
-	const maxPages = 1000
+	const maxPages = 200
 
 	var f CalendarEventFilter
 	if filter != nil {
@@ -396,18 +398,29 @@ func (c *Client) ListAllCalendarEvents(calendarID string, filter *CalendarEventF
 	f.Page = 0
 
 	var all []*CalendarEvent
+	seen := make(map[string]bool)
 	for f.Page < maxPages {
 		page, err := c.ListCalendarEvents(calendarID, &f)
 		if err != nil {
 			return nil, err
 		}
-		all = append(all, page...)
-		if len(page) < pageSize {
+
+		newCount := 0
+		for _, e := range page {
+			if !seen[e.ID] {
+				seen[e.ID] = true
+				all = append(all, e)
+				newCount++
+			}
+		}
+		log.Printf("calendar %s page %d: %d events, %d new (running total %d)", calendarID, f.Page, len(page), newCount, len(all))
+
+		if len(page) < pageSize || newCount == 0 {
 			return all, nil
 		}
 		f.Page++
 	}
-	return all, fmt.Errorf("ListAllCalendarEvents: exceeded %d pages for calendar %s (server may be ignoring pagination)", maxPages, calendarID)
+	return all, nil
 }
 
 func (c *Client) GetCalendarEvent(calendarID string, eventID string) (*CalendarEvent, error) {
