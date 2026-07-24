@@ -32,11 +32,29 @@ const (
 	// accumulate data before returning what it has. Must stay well under a
 	// typical CalDAV client request timeout.
 	initialLoadWait = 20 * time.Second
+	// How long a locally-written (or deleted) event is protected from being
+	// clobbered by a background reload. A full reload takes minutes and fetches
+	// Proton's state at the moment it *started*, so an event created while a
+	// reload is in flight is absent from the reload result and would otherwise be
+	// dropped when the reload swaps in its snapshot. Re-applying recent local
+	// mutations on top of every swap bridges that window; once Proton is
+	// consistent (seconds) and a later reload includes the event, the overlay
+	// entry expires. Must comfortably exceed a full reload's duration.
+	recentWriteTTL = 6 * time.Minute
 )
+
+// recentMutation records a local write or delete so it can be re-applied on top
+// of a background reload that raced it. See recentWriteTTL.
+type recentMutation struct {
+	obj     caldav.CalendarObject
+	deleted bool
+	at      time.Time
+}
 
 type calendarCache struct {
 	mu       sync.Mutex
 	objects  map[string]caldav.CalendarObject // keyed by Proton event ID
+	recent   map[string]recentMutation        // local writes/deletes, keyed by Proton event ID
 	loaded   bool
 	loading  bool
 	loadedAt time.Time
@@ -67,7 +85,10 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 	defer b.cachesMu.Unlock()
 	cc := b.caches[calID]
 	if cc == nil {
-		cc = &calendarCache{objects: make(map[string]caldav.CalendarObject)}
+		cc = &calendarCache{
+			objects: make(map[string]caldav.CalendarObject),
+			recent:  make(map[string]recentMutation),
+		}
 		b.caches[calID] = cc
 		if loadCacheFromDisk(calID, cc) {
 			log.Printf("cache %s: restored %d events from disk", calID, len(cc.objects))
@@ -160,8 +181,12 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 		cc.mu.Unlock()
 	}
 
-	// Replace wholesale so events deleted upstream drop out of the cache.
+	// Replace wholesale so events deleted upstream drop out of the cache, but
+	// re-apply recent local writes/deletes first: a reload fetches Proton's state
+	// from when it *started*, so an event written while it was in flight is absent
+	// here and must not be dropped. See recentWriteTTL.
 	cc.mu.Lock()
+	cc.applyRecentLocked(fresh)
 	cc.objects = fresh
 	cc.loaded = true
 	cc.loadedAt = time.Now()
@@ -175,6 +200,7 @@ func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
 	cc := b.cacheFor(calID)
 	cc.mu.Lock()
 	cc.objects[evtID] = obj
+	cc.recent[evtID] = recentMutation{obj: obj, at: time.Now()}
 	cc.mu.Unlock()
 	saveCacheToDisk(calID, cc)
 }
@@ -183,8 +209,26 @@ func (b *backend) cacheDelete(calID, evtID string) {
 	cc := b.cacheFor(calID)
 	cc.mu.Lock()
 	delete(cc.objects, evtID)
+	cc.recent[evtID] = recentMutation{deleted: true, at: time.Now()}
 	cc.mu.Unlock()
 	saveCacheToDisk(calID, cc)
+}
+
+// applyRecentLocked overlays local writes/deletes from the last recentWriteTTL on
+// top of m (typically a fresh reload result), and prunes expired overlay entries.
+// cc.mu must be held.
+func (cc *calendarCache) applyRecentLocked(m map[string]caldav.CalendarObject) {
+	for id, mut := range cc.recent {
+		if time.Since(mut.at) > recentWriteTTL {
+			delete(cc.recent, id)
+			continue
+		}
+		if mut.deleted {
+			delete(m, id)
+		} else {
+			m[id] = mut.obj
+		}
+	}
 }
 
 func (b *backend) cacheLookup(calID, evtID string) (caldav.CalendarObject, bool) {
