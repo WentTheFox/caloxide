@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -62,7 +63,10 @@ func readEventCard(event *ical.Event, eventCard protonmail.CalendarEventCard, us
 	}*/
 
 	if err := md.SignatureError; err != nil {
-		return nil, fmt.Errorf("caldav/readEventCard: signature error: (%w)", err)
+		// Old or imported events are often signed with a key that no longer
+		// verifies. For a personal read bridge, decryptability matters more than
+		// signature verification — serve the event rather than dropping it.
+		log.Printf("caldav/readEventCard: serving event with unverified signature: %v", err)
 	}
 
 	children := decoded.Events()
