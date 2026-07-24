@@ -102,7 +102,7 @@ type CalendarEvent struct {
 	FullDay                    int
 	UID                        string
 	IsOrganizer                int
-	RecurrenceID               string
+	RecurrenceID               interface{}
 	Exdates                    []interface{}
 	RRule                      interface{}
 	Author                     string
