@@ -379,16 +379,29 @@ func main() {
 				loginPassword = string(pass)
 			}
 
-			authInfo, err := c.AuthInfo(username)
+			var err error
+			login := func() (*protonmail.Auth, error) {
+				authInfo, err := c.AuthInfo(username)
+				if err != nil {
+					return nil, err
+				}
+				return c.Auth(username, loginPassword, authInfo)
+			}
+
+			a, err = login()
+			if apiErr, ok := err.(*protonmail.APIError); ok && apiErr.Code == 9001 && apiErr.HV != nil {
+				fmt.Printf("Human verification methods offered: %v\n", apiErr.HV.HumanVerificationMethods)
+				token, tokenType, solveErr := solveHumanVerification(apiErr.HV)
+				if solveErr != nil {
+					log.Fatal(solveErr)
+				}
+				c.SetHumanVerification(token, tokenType)
+				a, err = login()
+				c.ClearHumanVerification()
+			}
 			if err != nil {
 				log.Fatal(err)
 			}
-
-			a, err = c.Auth(username, loginPassword, authInfo)
-			if err != nil {
-				log.Fatal(err)
-			}
-
 			if a.TwoFactor.Enabled != 0 {
 				if a.TwoFactor.TOTP != 1 {
 					log.Fatal("Only TOTP is supported as a 2FA method")

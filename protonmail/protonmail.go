@@ -23,6 +23,7 @@ const headerAPIVersion = "X-Pm-Apiversion"
 type resp struct {
 	Code int
 	*RawAPIError
+	Details *HumanVerificationDetails `json:"Details"`
 }
 
 func (r *resp) Err() error {
@@ -30,6 +31,7 @@ func (r *resp) Err() error {
 		return &APIError{
 			Code:    r.Code,
 			Message: err.Message,
+			HV:      r.Details,
 		}
 	}
 	return nil
@@ -43,9 +45,18 @@ type RawAPIError struct {
 	Message string `json:"Error"`
 }
 
+// HumanVerificationDetails is the challenge Proton returns with a 9001 error:
+// which methods are offered and the token used to render the challenge.
+type HumanVerificationDetails struct {
+	HumanVerificationMethods []string `json:"HumanVerificationMethods"`
+	HumanVerificationToken   string   `json:"HumanVerificationToken"`
+}
+
 type APIError struct {
 	Code    int
 	Message string
+	// HV is set when the API rejected the request pending human verification.
+	HV *HumanVerificationDetails
 }
 
 func (err *APIError) Error() string {
@@ -74,6 +85,9 @@ type Client struct {
 	uid         string
 	accessToken string
 	keyRing     openpgp.EntityList
+
+	hvToken string
+	hvType  string
 }
 
 // SetSession seeds the client with an existing authenticated session (a UID and
@@ -82,6 +96,20 @@ type Client struct {
 func (c *Client) SetSession(uid, accessToken string) {
 	c.uid = uid
 	c.accessToken = accessToken
+}
+
+// SetHumanVerification attaches a token the account owner obtained by completing
+// Proton's challenge in their browser, so a request that returned 9001 can be
+// retried. tokenType is the method completed, e.g. "captcha".
+func (c *Client) SetHumanVerification(token, tokenType string) {
+	c.hvToken = token
+	c.hvType = tokenType
+}
+
+// ClearHumanVerification removes the one-shot verification token after use.
+func (c *Client) ClearHumanVerification() {
+	c.hvToken = ""
+	c.hvType = ""
 }
 
 func (c *Client) setRequestAuthorization(req *http.Request) {
@@ -104,6 +132,10 @@ func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request,
 	req.Header.Set("X-Pm-Appversion", c.AppVersion)
 	req.Header.Set(headerAPIVersion, strconv.Itoa(Version))
 	c.setRequestAuthorization(req)
+	if c.hvToken != "" {
+		req.Header.Set("X-Pm-Human-Verification-Token", c.hvToken)
+		req.Header.Set("X-Pm-Human-Verification-Token-Type", c.hvType)
+	}
 	return req, nil
 }
 
