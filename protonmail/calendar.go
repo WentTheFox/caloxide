@@ -137,7 +137,7 @@ func (t CalendarEventCardType) Signed() bool {
 
 func (t CalendarEventCardType) Encrypted() bool {
 	switch t {
-	case CalendarEventCardEncryptedAndSigned:
+	case CalendarEventCardEncrypted, CalendarEventCardEncryptedAndSigned:
 		return true
 	default:
 		return false
