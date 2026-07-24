@@ -174,10 +174,12 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 		Addr:      addr,
 		TLSConfig: tlsConfig,
 		Handler: http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
+			log.Printf("CalDAV <- %s %s", req.Method, req.URL.Path)
 			resp.Header().Set("WWW-Authenticate", "Basic")
 
 			username, password, ok := req.BasicAuth()
 			if !ok {
+				log.Printf("CalDAV %s %s: no credentials", req.Method, req.URL.Path)
 				resp.WriteHeader(http.StatusUnauthorized)
 				io.WriteString(resp, "Credentials are required")
 				return
