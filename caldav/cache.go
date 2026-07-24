@@ -208,8 +208,15 @@ func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
 	cc.mu.Lock()
 	cc.objects[evtID] = obj
 	cc.recent[evtID] = recentMutation{obj: obj, at: time.Now()}
+	persist := cc.loaded && !cc.loading
 	cc.mu.Unlock()
-	saveCacheToDisk(calID, cc)
+	// Only persist a fully-loaded, settled cache; otherwise we'd overwrite the
+	// on-disk cache with a partial in-memory set (a write landing mid initial load
+	// or mid reload). The write is held in memory and in the recent-writes overlay,
+	// so loadCache folds it into the full set it persists on completion.
+	if persist {
+		saveCacheToDisk(calID, cc)
+	}
 }
 
 func (b *backend) cacheDelete(calID, evtID string) {
@@ -217,8 +224,11 @@ func (b *backend) cacheDelete(calID, evtID string) {
 	cc.mu.Lock()
 	delete(cc.objects, evtID)
 	cc.recent[evtID] = recentMutation{deleted: true, at: time.Now()}
+	persist := cc.loaded && !cc.loading
 	cc.mu.Unlock()
-	saveCacheToDisk(calID, cc)
+	if persist {
+		saveCacheToDisk(calID, cc)
+	}
 }
 
 // applyRecentLocked overlays local writes/deletes from the last recentWriteTTL on
