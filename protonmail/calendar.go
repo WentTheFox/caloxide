@@ -709,6 +709,24 @@ func getUserKeys(userKr openpgp.KeyRing) *openpgp.Entity {
 	return userKr.(openpgp.EntityList)[0] // Is the first key always the correct one?
 }
 
+// entityForEmail returns the keyring entity whose identity matches email, or nil.
+// Proton wants calendar events signed with the key of the calendar member's own
+// address, which on a multi-address account is not necessarily the first key.
+func entityForEmail(kr openpgp.KeyRing, email string) *openpgp.Entity {
+	list, ok := kr.(openpgp.EntityList)
+	if !ok {
+		return nil
+	}
+	for _, e := range list {
+		for _, id := range e.Identities {
+			if id.UserId != nil && id.UserId.Email == email {
+				return e
+			}
+		}
+	}
+	return nil
+}
+
 func encryptPart(part string, key *packet.EncryptedKey, signer *openpgp.Entity, config *packet.Config) (string, error) {
 	var signKey *packet.PrivateKey
 	if signer != nil {
@@ -872,7 +890,20 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 		data.IsOrganizer = 1
 	}
 
-	userKeys := getUserKeys(userKr)
+	member, err := FindMemberViewFromKeyring(bootstrap.Members, userKr)
+	if err != nil {
+		return nil, "", fmt.Errorf("makeUpdateData: failed to find member view from keyring: (%w)", err)
+	}
+
+	// Sign with the calendar member's own address key. Proton rejects events
+	// ([2001] "Provide data signed using the address key") when signed with a
+	// different key than the member's address, which the first-key default hits
+	// on accounts that have several addresses.
+	userKeys := entityForEmail(userKr, member.Email)
+	if userKeys == nil {
+		userKeys = getUserKeys(userKr)
+	}
+
 	if signedSharedPart, ok := sharedPart[CalendarEventCardSigned]; ok && signedSharedPart != "" {
 		signature, err := signPart(signedSharedPart, userKeys, config)
 		if err != nil {
@@ -971,11 +1002,6 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 	// Removed attendees emails ...
 	// Attendees encrypted session keys ...
 	// Cancelled occurrence parts ...
-
-	member, err := FindMemberViewFromKeyring(bootstrap.Members, userKr)
-	if err != nil {
-		return nil, "", fmt.Errorf("makeUpdateData: failed to find member view from keyring: (%w)", err)
-	}
 
 	return &data, member.ID, nil
 }
