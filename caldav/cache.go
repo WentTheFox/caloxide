@@ -128,11 +128,15 @@ func snapshotObjects(cc *calendarCache) []caldav.CalendarObject {
 	return out
 }
 
-// cachedObjects returns the decrypted objects for a calendar, triggering a
-// background (re)load when the cache is cold or stale. Only a cold load (no data
-// at all, e.g. no disk cache) makes the request wait briefly; a stale refresh and
-// concurrent requests serve the existing snapshot immediately.
-func (b *backend) cachedObjects(calID string) []caldav.CalendarObject {
+// cachedObjects returns the decrypted objects for a calendar and whether the
+// cache has completed at least one full load (from disk or network). It triggers
+// a background (re)load when cold or stale. A stale refresh and concurrent
+// requests serve the existing snapshot immediately; only a cold load makes the
+// request wait briefly. When ready is false the caller should signal "not ready"
+// rather than serve an empty snapshot — a cold load fetches every page before
+// decrypting, so the cache is legitimately empty for the whole fetch, and a
+// client that saw 0 objects would treat the calendar as emptied and churn.
+func (b *backend) cachedObjects(calID string) (objs []caldav.CalendarObject, ready bool) {
 	cc := b.cacheFor(calID)
 
 	cc.mu.Lock()
@@ -159,7 +163,10 @@ func (b *backend) cachedObjects(calID string) []caldav.CalendarObject {
 		}
 	}
 
-	return snapshotObjects(cc)
+	cc.mu.Lock()
+	ready = cc.loaded
+	cc.mu.Unlock()
+	return snapshotObjects(cc), ready
 }
 
 func (b *backend) loadCache(calID string, cc *calendarCache) {

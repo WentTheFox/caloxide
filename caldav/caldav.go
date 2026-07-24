@@ -15,6 +15,7 @@ import (
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/emersion/go-ical"
+	webdav "github.com/emersion/go-webdav"
 	"github.com/emersion/go-webdav/caldav"
 	"github.com/mathewcsims/protoxide/protonmail"
 	"github.com/mathewcsims/protoxide/utils"
@@ -51,6 +52,37 @@ func (b *backend) CreateCalendar(ctx context.Context, calendar *caldav.Calendar)
 	return errors.ErrUnsupported
 }
 
+// sanitizeICS repairs decrypted iCalendar text that the strict decoder rejects.
+// The common defect in imported events is an unescaped line break inside a
+// property value: the continuation appears as its own physical line with no
+// name:value separator, which the decoder reports as "missing colon". Such lines
+// (no ':' and no ';', and not a fold continuation) are merged back onto the
+// previous logical line; blank lines are dropped. Lines that already look like
+// valid content lines pass through untouched.
+func sanitizeICS(data []byte) []byte {
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			continue
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			out = append(out, line) // proper fold continuation
+			continue
+		}
+		if !strings.ContainsAny(line, ":;") {
+			// Orphaned value continuation: merge into the previous logical line.
+			if len(out) > 0 {
+				out[len(out)-1] += line
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\r\n") + "\r\n")
+}
+
 func readEventCard(event *ical.Event, eventCard protonmail.CalendarEventCard, userKr openpgp.KeyRing, calKr openpgp.KeyRing, keyPacket string) (ical.Props, error) {
 	md, err := eventCard.Read(userKr, calKr, keyPacket)
 	if err != nil {
@@ -64,7 +96,16 @@ func readEventCard(event *ical.Event, eventCard protonmail.CalendarEventCard, us
 
 	decoded, err := ical.NewDecoder(bytes.NewReader(data)).Decode()
 	if err != nil {
-		return nil, fmt.Errorf("caldav/readEventCard: error decoding ical data: (%w)", err)
+		// Imported events sometimes carry content the strict parser rejects — most
+		// often an unescaped newline in a value, whose second physical line has no
+		// name:value separator ("missing colon"). Repair and retry rather than
+		// dropping the whole event.
+		repaired, rerr := ical.NewDecoder(bytes.NewReader(sanitizeICS(data))).Decode()
+		if rerr != nil {
+			return nil, fmt.Errorf("caldav/readEventCard: error decoding ical data: (%w)", err)
+		}
+		log.Printf("caldav/readEventCard: recovered a malformed event via sanitize")
+		decoded = repaired
 	}
 
 	// The signature can be checked only if md.UnverifiedBody is consumed until
@@ -384,7 +425,13 @@ func (b *backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 	calId, _ := strings.CutSuffix(path, "/")
 	calId, _ = strings.CutPrefix(calId, homeSetPath)
 
-	objs := b.cachedObjects(calId)
+	objs, ready := b.cachedObjects(calId)
+	if !ready {
+		// Cold load in progress: don't serve an empty list (the client would treat
+		// the calendar as emptied). Signal a transient error so it retries.
+		log.Printf("caldav/ListCalendarObjects: calendar still loading, asking client to retry")
+		return nil, webdav.NewHTTPError(http.StatusServiceUnavailable, fmt.Errorf("caldav: calendar still loading"))
+	}
 	log.Printf("caldav/ListCalendarObjects: returning %d objects", len(objs))
 	return objs, nil
 }
@@ -406,7 +453,11 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 	}
 	cf := &query.CompFilter.Comps[0]
 
-	all := b.cachedObjects(calId)
+	all, ready := b.cachedObjects(calId)
+	if !ready {
+		log.Printf("caldav/QueryCalendarObjects: calendar still loading, asking client to retry")
+		return nil, webdav.NewHTTPError(http.StatusServiceUnavailable, fmt.Errorf("caldav: calendar still loading"))
+	}
 
 	// Proton ignores server-side time filtering, so we filter the cache here.
 	if cf.Start.IsZero() && cf.End.IsZero() {
