@@ -76,6 +76,14 @@ type Client struct {
 	keyRing     openpgp.EntityList
 }
 
+// SetSession seeds the client with an existing authenticated session (a UID and
+// access token obtained elsewhere), so API calls can be made without performing
+// a fresh login. Used by the session-import path.
+func (c *Client) SetSession(uid, accessToken string) {
+	c.uid = uid
+	c.accessToken = accessToken
+}
+
 func (c *Client) setRequestAuthorization(req *http.Request) {
 	if c.uid != "" && c.accessToken != "" {
 		req.Header.Set("X-Pm-Uid", c.uid)
