@@ -1091,10 +1091,6 @@ func (c *Client) UpdateCalendarEvent(calID string, eventID string, event ical.Ev
 		return nil, fmt.Errorf("UpdateCalendarEvent: could not make update data: (%w)", err)
 	}
 
-	log.Printf("UpdateCalendarEvent: create=%v sharedContent=%d calendarContent=%d sharedKeyPacket=%v calendarKeyPacket=%v permissions=%d isOrganizer=%d notifications=%d",
-		isCreate, len(data.SharedEventContent), len(data.CalendarEventContent),
-		data.SharedKeyPacket != "", data.CalendarKeyPacket != "", data.Permissions, data.IsOrganizer, len(data.Notifications))
-
 	var entry interface{}
 	if isCreate {
 		entry = CalendarEventCreateSyncEntry{
