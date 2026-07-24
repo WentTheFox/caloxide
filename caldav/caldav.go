@@ -298,7 +298,7 @@ func (b *backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 	calId, _ := strings.CutSuffix(path, "/")
 	calId, _ = strings.CutPrefix(calId, homeSetPath)
 
-	events, err := b.c.ListAllCalendarEvents(calId, nil)
+	events, err := b.c.ListCalendarEvents(calId, nil)
 	if err != nil {
 		return nil, fmt.Errorf("caldav/ListCalendarObjects: error listing calendar events for calId %s: (%w)", calId, err)
 	}
@@ -350,7 +350,7 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 		Timezone: cf.Start.Location().String(),
 	}
 
-	events, err := b.c.ListAllCalendarEvents(calId, &filter)
+	events, err := b.c.ListCalendarEvents(calId, &filter)
 	if err != nil {
 		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error listing calendar events for calId %s: (%w)", calId, err)
 	}
