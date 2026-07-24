@@ -1037,11 +1037,20 @@ func (c *Client) UpdateCalendarEvent(calID string, eventID string, event ical.Ev
 		return nil, fmt.Errorf("UpdateCalendarEvent: could not send JSON request: (%w)", err)
 	}
 
-	if len(respData.Responses) != 1 || respData.Responses[0].Response.Event == nil {
-		return nil, fmt.Errorf("UpdateCalendarEvent: no event on events sync response")
+	if len(respData.Responses) != 1 {
+		return nil, fmt.Errorf("UpdateCalendarEvent: expected 1 sync response, got %d", len(respData.Responses))
+	}
+	r0 := respData.Responses[0].Response
+	if r0.Event == nil {
+		// The sync endpoint reports per-entry success/failure; surface Proton's
+		// actual reason for rejecting the create/update.
+		if perr := r0.Err(); perr != nil {
+			return nil, fmt.Errorf("UpdateCalendarEvent: sync entry rejected: (%w)", perr)
+		}
+		return nil, fmt.Errorf("UpdateCalendarEvent: no event on events sync response (entry code %d)", r0.Code)
 	}
 
-	return respData.Responses[0].Response.Event, nil
+	return r0.Event, nil
 }
 
 type CalendarEventDeleteSyncEntry struct {
