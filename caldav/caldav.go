@@ -391,6 +391,7 @@ func (b *backend) GetCalendarObject(ctx context.Context, path string, req *calda
 	if o, _, ok := b.findByToken(calId, token); ok {
 		return &o, nil
 	}
+	log.Printf("caldav/GetCalendarObject: cache MISS token=%s, falling back to Proton fetch", token)
 
 	// Cache miss: fall back to fetching by ID in case the token happens to be a
 	// Proton event ID rather than a UID.
@@ -499,7 +500,16 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 	if len(events) != 1 {
 		return nil, fmt.Errorf("caldav/PutCalendarObject: expected PUT VCALENDAR to have exactly one VEVENT")
 	}
-	event := events[0]
+
+	// UpdateCalendarEvent mutates the event it is given while building Proton's
+	// encrypted cards (it strips UID and other properties). The event shares its
+	// underlying component with our `calendar`, so writing directly would corrupt
+	// the copy we cache and the UID/path we derive for the response — leaving the
+	// object served at a Proton-ID path that no longer matches the client's PUT
+	// URL, so the client can't recognise its own event until a full resync.
+	// Hand the write an isolated clone and keep `calendar` pristine.
+	writeCal := cloneCalendar(calendar)
+	writeEvent := writeCal.Events()[0]
 
 	// The path token is the client's chosen UID. Resolve it to an existing Proton
 	// event ID: if found this is an update (pass the Proton ID so UpdateCalendarEvent
@@ -514,16 +524,16 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 	}
 
 	log.Printf("caldav/PutCalendarObject: writing event (calId=%s, token=%s, update=%v)", calId, token, isUpdate)
-	newEvent, err := b.c.UpdateCalendarEvent(calId, evtArg, event, b.privateKeys)
+	newEvent, err := b.c.UpdateCalendarEvent(calId, evtArg, writeEvent, b.privateKeys)
 	if err != nil {
 		log.Printf("caldav/PutCalendarObject: write FAILED (token=%s): %v", token, err)
 		return nil, fmt.Errorf("caldav/PutCalendarObject: error updating calendar event (calId: %s, token: %s): (%w)", calId, token, err)
 	}
 	log.Printf("caldav/PutCalendarObject: write OK, proton event id=%s", newEvent.ID)
 
-	// Serve the object at the stable UID-derived path the client used, so it is
-	// recognised on the next sync and survives a full cache reload (which re-keys
-	// the in-memory cache by Proton ID but recomputes the same UID path).
+	// Serve the object at the stable UID-derived path the client used (from the
+	// pristine calendar), so the client recognises its own event immediately and
+	// the object survives a full cache reload (which recomputes the same path).
 	path = homeSetPath + calId + formatCalendarObjectPath(objectToken(calendar, newEvent.ID))
 
 	obj := caldav.CalendarObject{
@@ -536,6 +546,21 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 	// visible immediately without waiting for a background refresh.
 	b.cacheStore(calId, newEvent.ID, obj)
 	return &obj, nil
+}
+
+// cloneCalendar returns a deep copy of a calendar by round-tripping it through
+// the encoder, so mutations to the copy (e.g. by Proton's write path) don't
+// affect the original. Falls back to the original if the round-trip fails.
+func cloneCalendar(cal *ical.Calendar) *ical.Calendar {
+	var buf bytes.Buffer
+	if err := ical.NewEncoder(&buf).Encode(cal); err != nil {
+		return cal
+	}
+	clone, err := ical.NewDecoder(&buf).Decode()
+	if err != nil {
+		return cal
+	}
+	return clone
 }
 
 func (b *backend) DeleteCalendarObject(ctx context.Context, path string) error {
