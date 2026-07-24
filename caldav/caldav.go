@@ -26,6 +26,7 @@ type backend struct {
 	locker      sync.Mutex
 
 	caches   map[string]*calendarCache
+	pollers  map[string]bool
 	cachesMu sync.Mutex
 }
 
@@ -495,6 +496,7 @@ func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username s
 		privateKeys: privateKeys,
 		keyCache:    keyCache,
 		caches:      make(map[string]*calendarCache),
+		pollers:     make(map[string]bool),
 	}
 
 	if events != nil {

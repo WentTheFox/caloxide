@@ -94,6 +94,13 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 			log.Printf("cache %s: restored %d events from disk", calID, len(cc.objects))
 		}
 	}
+	// Start the calendar event-loop poller once per calendar, so inbound changes
+	// (events created/edited in Proton or on another device) are patched into the
+	// cache within the poll interval instead of only on a 30-minute full reload.
+	if b.pollers != nil && !b.pollers[calID] {
+		b.pollers[calID] = true
+		go b.pollCalendar(calID)
+	}
 	return cc
 }
 

@@ -347,6 +347,64 @@ func (c *Client) BootstrapCalendar(id string) (*CalendarBootstrap, error) {
 	return respData.CalendarBootstrap, nil
 }
 
+// CalendarModelEventChange is a single create/update/delete reported by the
+// calendar event loop. Action reuses the mail-loop EventAction values
+// (0=delete, 1=create, 2=update). CalendarEvent carries the full (encrypted)
+// event for creates/updates; it is nil for deletes.
+type CalendarModelEventChange struct {
+	ID     string
+	Action EventAction
+	// Event carries event metadata for creates/updates but NOT the encrypted card
+	// bodies, so the full event must still be fetched by ID to decrypt it. Nil for
+	// deletes.
+	Event *CalendarEvent `json:"Event"`
+}
+
+// CalendarModelEvents is the response of the calendar event loop
+// (GET /calendar/v1/{calID}/modelevents/{cursor}). CalendarModelEventID is the
+// cursor to poll next. Refresh != 0 means the cursor is too old / state is
+// inconsistent and the caller should do a full resync. More != 0 means there
+// are further pages to fetch immediately with the new cursor.
+type CalendarModelEvents struct {
+	CalendarModelEventID string
+	Refresh              int
+	More                 int
+	CalendarEvents       []CalendarModelEventChange
+}
+
+// GetLatestCalendarModelEventID returns the current head of the calendar event
+// loop, used to seed the poll cursor so only subsequent changes are returned.
+func (c *Client) GetLatestCalendarModelEventID(calendarID string) (string, error) {
+	req, err := c.newRequest(http.MethodGet, calendarPath+"/"+calendarID+"/modelevents/latest", nil)
+	if err != nil {
+		return "", fmt.Errorf("GetLatestCalendarModelEventID: failed to create request: (%w)", err)
+	}
+	var respData struct {
+		resp
+		CalendarModelEventID string
+	}
+	if err := c.doJSON(req, &respData); err != nil {
+		return "", fmt.Errorf("GetLatestCalendarModelEventID: failed to execute request: (%w)", err)
+	}
+	return respData.CalendarModelEventID, nil
+}
+
+// GetCalendarModelEvents polls the calendar event loop for changes since cursor.
+func (c *Client) GetCalendarModelEvents(calendarID, cursor string) (*CalendarModelEvents, error) {
+	req, err := c.newRequest(http.MethodGet, calendarPath+"/"+calendarID+"/modelevents/"+cursor+"?CalledFrom=Background", nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetCalendarModelEvents: failed to create request: (%w)", err)
+	}
+	var respData struct {
+		resp
+		CalendarModelEvents
+	}
+	if err := c.doJSON(req, &respData); err != nil {
+		return nil, fmt.Errorf("GetCalendarModelEvents: failed to execute request: (%w)", err)
+	}
+	return &respData.CalendarModelEvents, nil
+}
+
 type CalendarEventFilter struct {
 	Start, End     Timestamp
 	Timezone       string
