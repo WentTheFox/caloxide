@@ -18,18 +18,17 @@ func main() {
 	bgColor := color.RGBA{26, 26, 46, 255}
 	gridColor := color.RGBA{55, 71, 79, 255}
 	fillColor := color.RGBA{74, 108, 134, 255}
-	textColor := color.RGBA{255, 255, 255, 255}
 	accentColor := color.RGBA{0, 200, 255, 255}
 	
 	draw.Draw(img, img.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
 	
-	// CALENDAR ICON
-	cellSize := 28
+	// CALENDAR ICON - centered, larger
+	cellSize := 36
 	gridCols, gridRows := 7, 6
 	gridWidth := gridCols * cellSize
 	gridHeight := gridRows * cellSize
 	gridX := (width - gridWidth) / 2
-	gridY := 140
+	gridY := (height - gridHeight) / 2
 	
 	for row := 0; row < gridRows; row++ {
 		for col := 0; col < gridCols; col++ {
@@ -53,7 +52,7 @@ func main() {
 		}
 	}
 	
-	// Fill event cells
+	// Fill event cells with accent color
 	eventCells := []struct{ col, row, w, h int }{
 		{2, 1, 1, 1}, {4, 1, 1, 1}, {1, 2, 1, 2}, {5, 3, 1, 1},
 		{3, 4, 1, 1}, {0, 1, 1, 1}, {6, 2, 1, 1},
@@ -71,29 +70,13 @@ func main() {
 		}
 	}
 	
-	// SYNC ARROWS
-	centerX := width / 2
-	drawCircularArrow(img, centerX, gridY-40, 30, 2, accentColor, true)
-	drawCircularArrow(img, centerX, gridY+gridHeight+40, 30, 2, accentColor, false)
+	// SYNC ARROWS - circular arrows around the calendar
+	// Top-right arrow (clockwise)
+	drawCircularArrow(img, width*3/4, gridY-cellSize, 32, 2, accentColor, true)
+	// Bottom-left arrow (counter-clockwise)
+	drawCircularArrow(img, width/4, gridY+gridHeight+cellSize, 32, 2, accentColor, false)
 	
-	// TEXT
-	drawBlockText(img, "PROTOXIDE", 80, textColor)
-	drawBlockText(img, "Proton Calendar CalDAV Bridge", 360, color.RGBA{180, 180, 180, 255})
-	
-	// FRAME
-	for i := 0; i < width; i++ {
-		img.Set(i, 0, color.RGBA{40, 50, 60, 255})
-		img.Set(i, 1, color.RGBA{40, 50, 60, 255})
-		img.Set(i, height-1, color.RGBA{40, 50, 60, 255})
-		img.Set(i, height-2, color.RGBA{40, 50, 60, 255})
-	}
-	for i := 0; i < height; i++ {
-		img.Set(0, i, color.RGBA{40, 50, 60, 255})
-		img.Set(1, i, color.RGBA{40, 50, 60, 255})
-		img.Set(width-1, i, color.RGBA{40, 50, 60, 255})
-		img.Set(width-2, i, color.RGBA{40, 50, 60, 255})
-	}
-	
+	// Save to file
 	outFile, err := os.Create("protoxide-logo.png")
 	if err != nil {
 		panic(err)
@@ -142,48 +125,6 @@ func drawCircularArrow(img *image.RGBA, cx, cy, radius, thickness int, c color.C
 			if x >= 0 && x < 512 && y >= 0 && y < 512 {
 				img.Set(x, y, c)
 			}
-		}
-	}
-}
-
-func drawBlockText(img *image.RGBA, text string, y int, c color.Color) {
-	font := map[rune][]string{
-		'P': {"11110", "10001", "10001", "11110", "10000", "10000", "10000"},
-		'R': {"11110", "10001", "10001", "11110", "10100", "10010", "10001"},
-		'O': {"01110", "10001", "10001", "10001", "10001", "10001", "01110"},
-		'T': {"11111", "00100", "00100", "00100", "00100", "00100", "00100"},
-		'X': {"10001", "10001", "01010", "00100", "01010", "10001", "10001"},
-		'I': {"11111", "00100", "00100", "00100", "00100", "00100", "11111"},
-		'D': {"11100", "10010", "10001", "10001", "10001", "10010", "11100"},
-		'E': {"11111", "10000", "10000", "11110", "10000", "10000", "11111"},
-		'A': {"01110", "10001", "10001", "11111", "10001", "10001", "10001"},
-		'C': {"01110", "10001", "10000", "10000", "10000", "10001", "01110"},
-		'L': {"10000", "10000", "10000", "10000", "10000", "10000", "11111"},
-		'V': {"10001", "10001", "10001", "10001", "10001", "01010", "00100"},
-		'B': {"11110", "10001", "10001", "11110", "10001", "10001", "11110"},
-		'G': {"01110", "10001", "10000", "10111", "10001", "10001", "01111"},
-		'N': {"10001", "11001", "10101", "10011", "10001", "10001", "10001"},
-		' ': {"00000", "00000", "00000", "00000", "00000", "00000", "00000"},
-		'-': {"00000", "00000", "00000", "11111", "00000", "00000", "00000"},
-	}
-	
-	x := (512 - len(text)*30) / 2
-	for _, ch := range text {
-		if char, ok := font[ch]; ok {
-			for row, line := range char {
-				for col, pixel := range line {
-					if pixel == '1' {
-						for i := 0; i < 3; i++ {
-							for j := 0; j < 3; j++ {
-								img.Set(x+col*3+i, y+row*3+j, c)
-							}
-						}
-					}
-				}
-			}
-			x += 18
-		} else {
-			x += 15
 		}
 	}
 }
