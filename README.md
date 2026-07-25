@@ -1,6 +1,6 @@
 # Protoxide
 
-![Protoxide Logo](protoxide-logo.png)
+![Protoxide Logo](protoxide-logo.png?v=2)
 
 A local bridge that exposes **Proton Calendar over CalDAV** on `localhost`, so a
 standards-compliant calendar client (developed against **Thunderbird**) can read
