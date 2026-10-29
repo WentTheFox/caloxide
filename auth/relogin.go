@@ -28,7 +28,17 @@ type protonAPI interface {
 	AuthTOTP(code string) (scope string, err error)
 }
 
-var _ protonAPI = (*protonmail.Client)(nil)
+// authAPI adds the human-verification calls used by the web verification flow.
+type authAPI interface {
+	protonAPI
+	SetHumanVerification(token, tokenType string)
+	ClearHumanVerification()
+}
+
+var (
+	_ protonAPI = (*protonmail.Client)(nil)
+	_ authAPI   = (*protonmail.Client)(nil)
+)
 
 const (
 	apiCodeInvalidRefreshToken = 10013
@@ -67,7 +77,7 @@ func (e *SuspendedError) Error() string {
 type HumanVerificationError struct{ Username string }
 
 func (e *HumanVerificationError) Error() string {
-	return fmt.Sprintf("Proton wants human verification, which cannot be done unattended; run `protoxide auth %s` and restart the bridge", e.Username)
+	return fmt.Sprintf("Proton wants human verification, which cannot be done unattended; run `protoxide verify` inside the container for a one-time link, or `protoxide auth %s` on a workstation and restart the bridge", e.Username)
 }
 
 // reloginer logs in to Proton again, unattended, using secrets from an external
@@ -205,34 +215,56 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 		return nil, r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: %w", err))
 	}
 
+	if err := r.finishLogin(c, cached, sec, auth, username); err != nil {
+		return nil, err
+	}
+	return auth, nil
+}
+
+// finishLogin completes a login Proton accepted: it answers a TOTP challenge if one
+// is pending, loads the secrets into the in-memory session, and records the success
+// (which clears the backoff, the cap and any CAPTCHA latch). The caller holds r.mu.
+func (r *reloginer) finishLogin(c protonAPI, cached *CachedAuth, sec credstore.Secrets, auth *protonmail.Auth, username string) error {
 	if auth.TwoFactor.Enabled != 0 {
 		if auth.TwoFactor.TOTP != 1 {
-			return nil, r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: only TOTP is supported as a 2FA method; run `protoxide auth`"))
+			return r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: only TOTP is supported as a 2FA method; run `protoxide auth`"))
 		}
 		if sec.TOTPSecret == "" {
-			return nil, r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: 2FA is enabled but "+credstore.NameTOTPSecret+" is not set in the secret store"))
+			return r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: 2FA is enabled but "+credstore.NameTOTPSecret+" is not set in the secret store"))
 		}
 		scope, err := r.answerTOTP(c, sec.TOTPSecret)
 		if err != nil {
-			return nil, r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: %w", err))
+			return r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: %w", err))
 		}
 		auth.Scope = scope
 	}
 
 	if err := apply(cached, sec, auth.PasswordMode); err != nil {
-		return nil, r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: %w", err))
+		return r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: %w", err))
 	}
 
-	// A successful login resets the breaker and the backoff.
-	r.st.Lock()
-	r.attempts = nil
-	r.nextAttempt = time.Time{}
-	r.st.Unlock()
-	r.bo.Reset()
+	r.markSuccess()
 	log.Printf("auth: re-authenticated unattended (2FA answered: %v)", auth.TwoFactor.Enabled != 0)
 	notify.Send("success", "relogin-ok", "protoxide: re-authenticated",
 		fmt.Sprintf("Account %q logged in again unattended.", username))
-	return auth, nil
+	return nil
+}
+
+// markSuccess resets the breaker, the backoff and the CAPTCHA latch.
+func (r *reloginer) markSuccess() {
+	r.st.Lock()
+	r.attempts = nil
+	r.nextAttempt = time.Time{}
+	r.humanNeeded = nil
+	r.st.Unlock()
+	r.bo.Reset()
+}
+
+// pendingHumanVerification returns the CAPTCHA latch, or nil if there is none.
+func (r *reloginer) pendingHumanVerification() *HumanVerificationError {
+	r.st.Lock()
+	defer r.st.Unlock()
+	return r.humanNeeded
 }
 
 // answerTOTP submits a code, first waiting out the current step if a code was

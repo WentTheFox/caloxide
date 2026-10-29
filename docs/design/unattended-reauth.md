@@ -202,6 +202,46 @@ sending seven doomed requests every 30 seconds. Fixed as follows.
   the next request after the delay tries again. The client's credentials are now guarded
   by a mutex (poller, handlers and the session hand-over share one client).
 
+### Answering a CAPTCHA without a workstation: the verification window
+
+A latched bridge can be unstuck from the browser, but only deliberately:
+
+1. Someone with command-line access to the container runs `protoxide verify` (for
+   example `docker exec protoxide /protoxide -config-home /data verify`). It talks to
+   the running bridge over a unix socket in the private config directory (mode 0600,
+   only the bridge's own user can connect; it is not a network service).
+2. The bridge opens a **verification window** if, and only if, a CAPTCHA is actually
+   pending, and prints a one-time link `<PROTOXIDE_PUBLIC_URL>/verify/<token>`. The token
+   is 256 random bits, lives in memory only, and the window lasts 10 minutes. Opening
+   the page starts at most 3 fresh login attempts per window.
+3. Every other request, with any other token or none, gets the same plain 404 as an
+   unknown path, so nothing reveals that the route exists. There is no setting that
+   leaves it open.
+4. On the page the person answers the CAPTCHA; the bridge logs in again with the
+   credentials from the secret store, answers the TOTP challenge, adopts the session,
+   persists it and clears the latch. No restart, no workstation, and the bridge password
+   does not change.
+
+The page is served with a strict CSP (per-response nonce, `default-src 'none'`,
+`frame-ancestors 'none'`), `Referrer-Policy: no-referrer` (the URL holds the token),
+`Cache-Control: no-store`, and every dynamic value escaped. A cross-site POST cannot
+succeed without the per-challenge nonce, which only the page itself receives.
+
+**Why the person still has to do something in the popup.** Proton's CAPTCHA page reports
+its result with `window.parent.postMessage({type:"pm_captcha", token:"<id>:<response>"},
+'*')`. That is written for an iframe. In a popup `window.parent` is the popup itself, not
+the window that opened it, so the opener never sees the message. Embedding is not possible
+either: the CAPTCHA page sets `frame-ancestors https://verify.proton.me`, and
+`verify.proton.me` in turn only allows `mail`, `calendar` and `drive.proton.me`. (Proton's
+native apps use webview message hooks instead.) The original author's helper listened on
+the opener, which never receives anything, and added a console snippet as the "reliable"
+fallback. The only place the message can be caught is inside the popup, so the page shows
+a snippet to paste into the popup's console. It logs the message (the manual fallback) and
+relays the token to `window.opener`, which the page accepts only from the popup it opened
+and only from Proton's CAPTCHA origin. A userscript manager could install the same listener
+automatically; that is a possible follow-up. The relay was verified against a faked DOM,
+not against Proton's real CAPTCHA.
+
 ### Safety rails
 
 - Re-authentication is rate-limited with backoff and a circuit breaker (for example

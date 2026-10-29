@@ -35,6 +35,7 @@ import (
 	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
 	"github.com/mathewcsims/protoxide/totp"
+	"github.com/mathewcsims/protoxide/webverify"
 	smtpbackend "github.com/mathewcsims/protoxide/smtp"
 )
 
@@ -120,6 +121,28 @@ func secretsBackend() credstore.Provider {
 
 // forStorage drops the static passwords from c when they live in an external
 // secret store, so they never reach auth.json.
+// startVerification prepares the one-time CAPTCHA page and the control socket that
+// opens it, when the secrets backend is in use. Without the backend it returns nil
+// and nothing is served. The page is a 404 unless `protoxide verify` opened a window,
+// which in turn is refused unless a CAPTCHA is actually pending.
+func startVerification(m *auth.Manager) http.Handler {
+	if secretsBackend() == nil {
+		return nil
+	}
+	publicURL := strings.TrimRight(os.Getenv("PROTOXIDE_PUBLIC_URL"), "/")
+	sock, err := config.Path("control.sock")
+	if err != nil {
+		log.Printf("verify: control socket unavailable: %v", err)
+		return nil
+	}
+	if _, err := webverify.ServeControl(sock, publicURL, m.OpenVerificationWindow); err != nil {
+		log.Printf("verify: control socket unavailable: %v", err)
+		return nil
+	}
+	log.Printf("verify: if Proton asks for a CAPTCHA, run `protoxide verify` inside the container for a one-time link")
+	return webverify.Handler(m)
+}
+
 // warnIfNoSecretsBackend makes the silent fallback audible: without a backend,
 // `auth` asks for the password and keeps it in auth.json. If Infisical settings are
 // present but the switch is not, the likely cause is a half-configured shell.
@@ -237,7 +260,9 @@ func listenAndServeIMAP(addr string, debug bool, authManager *auth.Manager, even
 	return s.ListenAndServe()
 }
 
-func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager *events.Manager, tlsConfig *tls.Config) error {
+// verify, if not nil, serves the one-time CAPTCHA page under webverify.PathPrefix. It
+// answers 404 unless a verification window is open.
+func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager *events.Manager, tlsConfig *tls.Config, verify http.Handler) error {
 	handlers := make(map[string]http.Handler)
 
 	s := &http.Server{
@@ -255,6 +280,11 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 					resp.WriteHeader(http.StatusInternalServerError)
 				}
 			}()
+
+			if verify != nil && strings.HasPrefix(req.URL.Path, webverify.PathPrefix) {
+				verify.ServeHTTP(resp, req)
+				return
+			}
 
 			if debug {
 				log.Printf("CalDAV <- %s %s", req.Method, req.URL.Path)
@@ -447,9 +477,9 @@ func main() {
 	cmd := flag.Arg(0)
 	if b := os.Getenv(credstore.BackendEnv); b != "" && b != "local" {
 		switch cmd {
-		case "caldav", "auth", "import-session", "check-secrets":
+		case "caldav", "auth", "import-session", "check-secrets", "verify":
 		default:
-			log.Fatalf("%s=%s is only supported by the caldav, auth, import-session and check-secrets commands", credstore.BackendEnv, b)
+			log.Fatalf("%s=%s is only supported by the caldav, auth, import-session, check-secrets and verify commands", credstore.BackendEnv, b)
 		}
 	}
 	switch cmd {
@@ -686,6 +716,22 @@ func main() {
 			log.Fatalf("set %s=infisical (and the PROTOXIDE_INFISICAL_* variables) first", credstore.BackendEnv)
 		}
 		fmt.Println(storedSecrets().Describe())
+	case "verify":
+		// Run inside the container (docker exec): asks the running bridge for a
+		// one-time link to the CAPTCHA page. Refused unless a CAPTCHA is pending.
+		sock, err := config.Path("control.sock")
+		if err != nil {
+			log.Fatal(err)
+		}
+		link, expires, err := webverify.RequestLink(sock)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("Open this link in a browser within %s (it works once, for one verification):\n\n  %s\n",
+			time.Until(expires).Round(time.Minute), link)
+		if !strings.HasPrefix(link, "http") {
+			fmt.Printf("\n(PROTOXIDE_PUBLIC_URL is not set on the bridge, so put its address in front of %s)\n", webverify.PathPrefix)
+		}
 	case "status":
 		usernames, err := auth.ListUsernames()
 		if err != nil {
@@ -848,7 +894,8 @@ func main() {
 			}()
 		}
 		eventsManager := events.NewManager()
-		err := listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig)
+		verifyHandler := startVerification(authManager)
+		err := listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig, verifyHandler)
 		// Only reached if the server stops. Alert before exiting so a restart
 		// (e.g. by launchd) is visible rather than silent.
 		notify.SendSync("failure", "protoxide: CalDAV server stopped",
@@ -886,7 +933,7 @@ func main() {
 		}
 		if !*disableCalDAV {
 			go func() {
-				done <- listenAndServeCalDAV(caldavAddr, authManager, eventsManager, tlsConfig)
+				done <- listenAndServeCalDAV(caldavAddr, authManager, eventsManager, tlsConfig, nil)
 			}()
 		}
 		log.Fatal(<-done)

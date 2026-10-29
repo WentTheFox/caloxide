@@ -62,3 +62,14 @@ write failed, server stopped) are reported by `notify`. Sinks, each optional:
 
 A misconfigured webhook sends nothing and logs why (without the URL).
 
+## When Proton asks for a CAPTCHA
+
+A fresh login (which a dead session forces) can trigger Proton's CAPTCHA, which cannot be
+answered unattended. The bridge then stops calling Proton, alerts once, and waits. To
+continue, run `protoxide verify` inside the container for a one-time, 10-minute link (for
+example `docker exec protoxide /protoxide -config-home /data verify`), open it, and follow
+the page. Set `PROTOXIDE_PUBLIC_URL` (the https address clients use) so the link is complete.
+The page does not exist otherwise: it answers 404 unless a window was opened that way, and
+a window can only be opened while a CAPTCHA is pending. Alternatively run `protoxide auth`
+on a workstation and restart the bridge. Details: `docs/design/unattended-reauth.md`.
+

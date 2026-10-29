@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"golang.org/x/crypto/bcrypt"
@@ -265,21 +266,45 @@ func GeneratePassword() (secretKey *[32]byte, password string, err error) {
 	return &key, password, nil
 }
 
+// session is one account's state inside the process. It can exist before it is
+// ready: opening it only decrypts auth.json (no network), so the bridge password can
+// be checked, and the web verification page can finish a login, even when the very
+// first attempt to establish the session was stopped by a CAPTCHA.
 type session struct {
+	username        string
 	hashedSecretKey []byte
+	key             [32]byte // the bridge password's key; in memory only, as before
 	c               *protonmail.Client
-	privateKeys     openpgp.EntityList
+	jar             *cookiestore.Jar
+
+	// mu serialises re-authentication and web verification, and guards the fields
+	// below. Lock order is always session.mu, then reloginer.mu.
+	mu          sync.Mutex
+	cached      CachedAuth
+	privateKeys openpgp.EntityList
+	ready       bool
+	challenge   *verifyChallenge
 }
 
 var ErrUnauthorized = errors.New("invalid username or password")
 
 type Manager struct {
 	newClient func() *protonmail.Client
-	mu        sync.Mutex // guards sessions, and serialises first-time session setup
+	mu        sync.Mutex // guards sessions, and serialises opening and establishing them
 	sessions  map[string]*session
 
 	// rl is non-nil only when a secrets backend is configured (UseSecrets).
 	rl *reloginer
+
+	// Seams so the web verification flow can be tested without Proton's SRP login.
+	detach func(c *protonmail.Client) authAPI
+	adopt  func(c *protonmail.Client, d authAPI)
+	now    func() time.Time
+
+	// The verification window (see verify.go) has its own lock so that checking a
+	// URL token never waits for a login in progress.
+	wmu sync.Mutex
+	win *verifyWindow
 }
 
 // UseSecrets keeps the static Proton passwords (and the TOTP seed) in an external
@@ -307,98 +332,121 @@ func (m *Manager) save(c *CachedAuth, username string, key *[32]byte) error {
 	return EncryptAndSave(c, username, key)
 }
 
+// persist stores s. The caller holds s.mu.
+func (m *Manager) persist(s *session) error {
+	return m.persistSession(&s.cached, s.jar, s.username, &s.key)
+}
+
+// openSession returns the account's session, creating it from auth.json if needed.
+// It verifies the bridge password but never touches the network. The caller holds
+// m.mu.
+func (m *Manager) openSession(username, password string) (*session, error) {
+	var secretKey [32]byte
+	passwordBytes, err := base64.StdEncoding.DecodeString(password)
+	if err != nil || len(passwordBytes) != len(secretKey) {
+		return nil, ErrUnauthorized
+	}
+	copy(secretKey[:], passwordBytes)
+
+	if s, ok := m.sessions[username]; ok {
+		if err := bcrypt.CompareHashAndPassword(s.hashedSecretKey, secretKey[:]); err != nil {
+			return nil, ErrUnauthorized
+		}
+		return s, nil
+	}
+
+	auths, err := readCachedAuths()
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	encrypted, ok := auths[username]
+	if !ok {
+		return nil, ErrUnauthorized
+	}
+	decrypted, err := decrypt(encrypted, &secretKey)
+	if err != nil {
+		return nil, ErrUnauthorized
+	}
+	var cachedAuth CachedAuth
+	if err := json.Unmarshal(decrypted, &cachedAuth); err != nil {
+		return nil, err
+	}
+	hashed, err := bcrypt.GenerateFromPassword(secretKey[:], bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+
+	c := m.newClient()
+	if m.rl != nil {
+		// Authenticated requests fail locally while re-login is paused, instead of
+		// hammering Proton with a dead token (see reloginer.blocked).
+		c.Gate = m.rl.blocked
+	}
+	s := &session{
+		username:        username,
+		hashedSecretKey: hashed,
+		key:             secretKey,
+		c:               c,
+		cached:          cachedAuth,
+	}
+	s.jar = attachCookieJar(c, cachedAuth.Cookies, cookiestore.ProtonHosts)
+	// ReAuth runs on a 401 from any goroutine using this client (requests, the
+	// event poller); serialise it, since it rewrites s.cached.
+	c.ReAuth = func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if _, err := reauthenticate(c, &s.cached, username, m.rl); err != nil {
+			return err
+		}
+		return m.persist(s)
+	}
+	m.sessions[username] = s
+	return s, nil
+}
+
+// establish makes s usable: loads the secrets (secrets backend) and authenticates.
+// A failure leaves the session open but not ready, and a later call tries again
+// unless re-login is paused. The caller holds m.mu.
+func (m *Manager) establish(s *session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ready {
+		return nil
+	}
+	if m.rl != nil {
+		if err := m.rl.blocked(); err != nil {
+			return err
+		}
+		// The passwords are not in auth.json; load them for this session.
+		if err := m.rl.populate(&s.cached); err != nil {
+			return err
+		}
+	}
+	// reauthenticate updates s.cached with the new refresh token. c is not shared
+	// with other goroutines yet, so no extra lock is needed beyond s.mu.
+	keys, err := reauthenticate(s.c, &s.cached, s.username, m.rl)
+	if err != nil {
+		return err
+	}
+	if err := m.persist(s); err != nil {
+		return err
+	}
+	s.privateKeys = keys
+	s.ready = true
+	return nil
+}
+
 func (m *Manager) Auth(username, password string) (*protonmail.Client, openpgp.EntityList, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var secretKey [32]byte
-	passwordBytes, err := base64.StdEncoding.DecodeString(password)
-	if err != nil || len(passwordBytes) != len(secretKey) {
-		return nil, nil, ErrUnauthorized
+	s, err := m.openSession(username, password)
+	if err != nil {
+		return nil, nil, err
 	}
-	copy(secretKey[:], passwordBytes)
-
-	s, ok := m.sessions[username]
-	if ok {
-		err := bcrypt.CompareHashAndPassword(s.hashedSecretKey, secretKey[:])
-		if err != nil {
-			return nil, nil, ErrUnauthorized
-		}
-	} else {
-		auths, err := readCachedAuths()
-		if err != nil && !os.IsNotExist(err) {
-			return nil, nil, err
-		}
-
-		encrypted, ok := auths[username]
-		if !ok {
-			return nil, nil, ErrUnauthorized
-		}
-
-		decrypted, err := decrypt(encrypted, &secretKey)
-		if err != nil {
-			return nil, nil, ErrUnauthorized
-		}
-
-		var cachedAuth CachedAuth
-		if err := json.Unmarshal(decrypted, &cachedAuth); err != nil {
-			return nil, nil, err
-		}
-		if m.rl != nil {
-			// The passwords are not in auth.json; load them for this session.
-			if err := m.rl.populate(&cachedAuth); err != nil {
-				return nil, nil, err
-			}
-		}
-
-		c := m.newClient()
-		if m.rl != nil {
-			// Authenticated requests fail locally while re-login is paused, instead of
-			// hammering Proton with a dead token (see reloginer.blocked).
-			c.Gate = m.rl.blocked
-		}
-		jar := attachCookieJar(c, cachedAuth.Cookies, cookiestore.ProtonHosts)
-		// persist stores the session together with the current cookies.
-		persist := func() error { return m.persistSession(&cachedAuth, jar, username, &secretKey) }
-		reauth := func() (openpgp.EntityList, error) {
-			return reauthenticate(c, &cachedAuth, username, m.rl)
-		}
-		// ReAuth runs on a 401 from any goroutine using this client (requests, the
-		// event poller); serialise it, since it rewrites cachedAuth.
-		var reauthMu sync.Mutex
-		c.ReAuth = func() error {
-			reauthMu.Lock()
-			defer reauthMu.Unlock()
-			if _, err := reauth(); err != nil {
-				return err
-			}
-			return persist()
-		}
-
-		// reauth updates cachedAuth with the new refresh token. c is not shared
-		// with other goroutines yet, so no lock is needed here.
-		privateKeys, err := reauth()
-		if err != nil {
-			return nil, nil, err
-		}
-
-		if err := persist(); err != nil {
-			return nil, nil, err
-		}
-
-		hashed, err := bcrypt.GenerateFromPassword(secretKey[:], bcrypt.DefaultCost)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		s = &session{
-			c:               c,
-			privateKeys:     privateKeys,
-			hashedSecretKey: hashed,
-		}
-		m.sessions[username] = s
+	if err := m.establish(s); err != nil {
+		return nil, nil, err
 	}
-
 	return s.c, s.privateKeys, nil
 }
 
@@ -406,5 +454,12 @@ func NewManager(newClient func() *protonmail.Client) *Manager {
 	return &Manager{
 		newClient: newClient,
 		sessions:  make(map[string]*session),
+		now:       time.Now,
+		detach:    func(c *protonmail.Client) authAPI { return c.Detached() },
+		adopt: func(c *protonmail.Client, d authAPI) {
+			if dc, ok := d.(*protonmail.Client); ok {
+				c.AdoptSession(dc)
+			}
+		},
 	}
 }

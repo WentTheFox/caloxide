@@ -55,6 +55,13 @@ type fakeAPI struct {
 
 	refreshCalls, infoCalls, unlockCalls int
 
+	// requireHV makes Auth answer 9001 (with hvDetails) until a human-verification
+	// token is attached; rejectHV makes it answer 9001 even with one.
+	requireHV, rejectHV bool
+	hvDetails           *protonmail.HumanVerificationDetails
+	hvToken, hvType     string
+	hvTokenUsed         string // the token present when Auth last succeeded
+
 	authCalls  int
 	passwords  []string
 	totpCodes  []string
@@ -96,8 +103,17 @@ func (f *fakeAPI) Auth(_, password string, _ *protonmail.AuthInfo) (*protonmail.
 	if f.authErr != nil {
 		return nil, f.authErr
 	}
+	if f.rejectHV || (f.requireHV && f.hvToken == "") {
+		return nil, &protonmail.APIError{Code: 9001, Message: "captcha", HV: f.hvDetails}
+	}
+	f.hvTokenUsed = f.hvToken
 	return f.loginAuth(), nil
 }
+
+func (f *fakeAPI) SetHumanVerification(token, tokenType string) {
+	f.hvToken, f.hvType = token, tokenType
+}
+func (f *fakeAPI) ClearHumanVerification() { f.hvToken, f.hvType = "", "" }
 func (f *fakeAPI) AuthTOTP(code string) (string, error) {
 	f.totpCodes = append(f.totpCodes, code)
 	return "full", f.totpErr

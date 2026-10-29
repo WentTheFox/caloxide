@@ -8,6 +8,7 @@ http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|Li
 http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	notify/notify.go
 http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	protonmail/protonmail.go
 net\.(Dial|DialTimeout|Listen|ListenPacket|LookupHost|LookupIP|LookupAddr|LookupTXT|LookupCNAME)	cmd/protoxide/humanverify.go
+net\.(Dial|DialTimeout|Listen|ListenPacket|LookupHost|LookupIP|LookupAddr|LookupTXT|LookupCNAME)	webverify/control.go
 os/exec|exec\.Command	cmd/protoxide/humanverify.go
 os\.(Getenv|LookupEnv|Environ|Setenv)	cmd/protoxide/main.go
 os\.(Getenv|LookupEnv|Environ|Setenv)	credstore/credstore.go
@@ -23,3 +24,4 @@ os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	notify/notify.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	auth/auth.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	caldav/cache.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	generate_logo.go
+os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	webverify/control.go
