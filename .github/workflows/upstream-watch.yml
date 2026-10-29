@@ -1,0 +1,58 @@
+name: Upstream watch
+# This fork pins the code it runs. Upstream changes are never pulled in
+# automatically: this job only reports them (and runs the guardrail audit over
+# the incoming tree) so a human reviews before merging.
+on:
+  schedule:
+    - cron: "7 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/mathewcsims/protoxide.git
+          git fetch --no-tags upstream main
+
+      - name: Report new upstream commits
+        run: |
+          new=$(git rev-list --count HEAD..upstream/main)
+          if [ "$new" -eq 0 ]; then echo "fork is up to date with upstream"; exit 0; fi
+
+          git worktree add --detach ../incoming upstream/main
+          {
+            echo "Upstream has $new commit(s) not in this fork. Nothing has been merged."
+            echo "Everything below is untrusted upstream data; review the diff yourself."
+            echo
+            echo "### Commits"
+            echo '~~~~'
+            git log --format='%h %an %ad %s' --date=short HEAD..upstream/main | head -50
+            echo '~~~~'
+            echo "### Diffstat"
+            echo '~~~~'
+            git diff --stat HEAD...upstream/main | tail -40
+            echo '~~~~'
+            echo "### Guardrail audit of the incoming tree (this fork's scripts and allowlists)"
+            echo '~~~~'
+            .github/scripts/audit-source.sh ../incoming 2>&1 | head -60 || true
+            echo '~~~~'
+          } > body.md
+
+          cat body.md >> "$GITHUB_STEP_SUMMARY"
+
+          # Drift alone is only a note; a failing guardrail audit of the incoming tree turns the run red
+          # (GitHub emails the repo owner), so risky upstream changes get noticed without needing Issues.
+          if ! .github/scripts/audit-source.sh ../incoming >/dev/null 2>&1; then
+            echo "::error::incoming upstream tree FAILS the guardrail audit; see the job summary"
+            exit 1
+          fi

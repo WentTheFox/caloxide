@@ -1,0 +1,8 @@
+# Hostnames/addresses that may appear in non-comment Go code (outside third_party).
+# Adding a line here is a security decision: it lets the program talk to that host.
+mail.proton.me
+verify-api.proton.me
+mail.protonmailrmez3lotccipshtkleegetolb73fuirgj7r4o4vfu7ozyd.onion
+www.protonmail.ch
+127.0.0.1
+localhost

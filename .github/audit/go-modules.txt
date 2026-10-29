@@ -1,0 +1,19 @@
+# Reviewed set of Go module paths (versions may float; NEW modules fail audit-source.sh).
+github.com/ProtonMail/go-crypto
+github.com/cloudflare/circl
+github.com/emersion/go-bcrypt
+github.com/emersion/go-ical
+github.com/emersion/go-imap
+github.com/emersion/go-mbox
+github.com/emersion/go-message
+github.com/emersion/go-sasl
+github.com/emersion/go-smtp
+github.com/emersion/go-vcard
+github.com/emersion/go-webdav
+github.com/google/uuid
+github.com/teambition/rrule-go
+go.etcd.io/bbolt
+golang.org/x/crypto
+golang.org/x/sys
+golang.org/x/term
+golang.org/x/text
