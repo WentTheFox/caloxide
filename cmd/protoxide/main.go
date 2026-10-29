@@ -48,6 +48,7 @@ var (
 	debug       bool
 	apiEndpoint string
 	appVersion  string
+	userAgent   string
 	proxyURL    string
 	tor         bool
 )
@@ -101,6 +102,7 @@ func newClient() *protonmail.Client {
 	return &protonmail.Client{
 		RootURL:    apiEndpoint,
 		AppVersion: appVersion,
+		UserAgent:  userAgent,
 		Debug:      debug,
 		HTTPClient: httpClient,
 	}
@@ -364,7 +366,8 @@ Environment variables:
 func main() {
 	flag.BoolVar(&debug, "debug", false, "Enable debug logs")
 	flag.StringVar(&apiEndpoint, "api-endpoint", defaultAPIEndpoint, "ProtonMail API endpoint")
-	flag.StringVar(&appVersion, "app-version", defaultAppVersion, "ProtonMail app version")
+	flag.StringVar(&appVersion, "app-version", defaultAppVersion, "ProtonMail app version, e.g. external-calendar-protoxide@0.2.0-stable")
+	flag.StringVar(&userAgent, "user-agent", "", "User-Agent sent to Proton (default: a Firefox-on-Linux string)")
 
 	smtpHost := flag.String("smtp-host", "127.0.0.1", "Allowed SMTP email hostname on which protoxide listens, defaults to 127.0.0.1")
 	smtpPort := flag.String("smtp-port", "1025", "SMTP port on which protoxide listens, defaults to 1025")

@@ -20,6 +20,10 @@ const Version = 3
 
 const headerAPIVersion = "X-Pm-Apiversion"
 
+// defaultUserAgent is what the client has always sent. Whether Proton's anti-abuse
+// checks like it is unknown; Client.UserAgent lets a deployment try an honest one.
+const defaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:101.0) Gecko/20100101 Firefox/101.0"
+
 type resp struct {
 	Code int
 	*RawAPIError
@@ -77,7 +81,9 @@ func (t Timestamp) Time() time.Time {
 type Client struct {
 	RootURL    string
 	AppVersion string
-	Debug      bool
+	// UserAgent is sent with every request; empty means defaultUserAgent.
+	UserAgent string
+	Debug     bool
 
 	HTTPClient *http.Client
 	ReAuth     func() error
@@ -95,7 +101,7 @@ type Client struct {
 // own (Unlock), and on a 401 they would otherwise call ReAuth again from inside
 // ReAuth, recursing until the stack overflows (or deadlocking on a lock).
 func (c *Client) Detached() *Client {
-	return &Client{RootURL: c.RootURL, AppVersion: c.AppVersion, Debug: c.Debug, HTTPClient: c.HTTPClient}
+	return &Client{RootURL: c.RootURL, AppVersion: c.AppVersion, UserAgent: c.UserAgent, Debug: c.Debug, HTTPClient: c.HTTPClient}
 }
 
 // AdoptSession takes over the authenticated session and unlocked keys of d, a
@@ -177,7 +183,11 @@ func (c *Client) newJSONRequest(method, path string, body interface{}) (*http.Re
 }
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:101.0) Gecko/20100101 Firefox/101.0")
+	ua := c.UserAgent
+	if ua == "" {
+		ua = defaultUserAgent
+	}
+	req.Header.Set("User-Agent", ua)
 
 	httpClient := c.HTTPClient
 	if httpClient == nil {
