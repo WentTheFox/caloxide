@@ -41,3 +41,18 @@ Runtime notes:
   port on `127.0.0.1` only and terminate TLS in a reverse proxy.
 - `protoxide auth <address>` needs a browser for Proton's human-verification step, so run
   it on a workstation, then copy `auth.json` into the volume.
+
+## Alerts
+
+Failures that need a human (session expired and could not be renewed, breaker open,
+write failed, server stopped) are reported by `notify`. Sinks, each optional:
+
+- **Discord:** `PROTOXIDE_DISCORD_WEBHOOK_URL`, or `..._FILE` (a path, for Docker secrets).
+  The URL contains a secret token: it is validated (https, `discord.com` or
+  `discordapp.com` only, path `/api/webhooks/<id>/<token>`), never followed through a
+  redirect, and never written to logs. Messages cannot mention anyone, and are
+  debounced to one per kind per 10 minutes.
+- **Apprise:** `PROTOXIDE_APPRISE_URL` (and `..._URLS`), as before.
+
+A misconfigured webhook sends nothing and logs why (without the URL).
+
