@@ -1,316 +1,249 @@
-# Protoxide
+# Caloxide
 
-![Protoxide Logo](protoxide-logo.png?v=2)
+![Caloxide Logo](caloxide-logo.png?v=2)
 
-A local bridge that exposes **Proton Calendar over CalDAV** on `localhost`, so a
-standards-compliant calendar client (developed against **Thunderbird**) can read
-**and write** your Proton calendar with near-real-time two-way sync — instead of
-the read-only, hours-stale ICS feed that is otherwise the only option.
+A local bridge that exposes **Proton Calendar over CalDAV**, so a standards-compliant
+calendar client (developed against **Thunderbird**) can read **and write** your Proton
+calendar with two-way sync that is current to within about a minute, instead of the read-only, hours-stale ICS
+feed that is otherwise the only option.
 
-It is a fork of [`acheong08/ferroxide`](https://github.com/acheong08/ferroxide),
-itself a fork of [`emersion/hydroxide`](https://github.com/emersion/hydroxide) —
-third-party, open-source bridges that speak Proton's internal API locally and
-re-expose it over standard protocols (the same idea as the official Proton Mail
-Bridge, which covers mail only). Protoxide narrows the focus to the
-calendar/CalDAV path and hardens it for daily use.
+It is a pinned, audited fork of [`mathewcsims/protoxide`](https://github.com/mathewcsims/protoxide)
+(itself a fork of [`acheong08/ferroxide`](https://github.com/acheong08/ferroxide) and
+[`emersion/hydroxide`](https://github.com/emersion/hydroxide)): third-party, open-source
+bridges that speak Proton's internal API locally and re-expose it over standard
+protocols. Caloxide narrows the focus to the calendar path and adds what is needed to run
+it unattended on a server. It was called *protoxide* until October 2026, see
+[Renamed from protoxide](#renamed-from-protoxide).
 
-## Why this exists
+Proton Calendar has no CalDAV and no public API, because of its end-to-end encryption.
+Live, writable desktop access needs a local process that holds your session, does the PGP
+work on your machine, and serves a standard protocol.
 
-Proton Calendar has no CalDAV support and no public API — a deliberate
-consequence of its end-to-end encryption, where the server cannot read events by
-design. The only way to get live, writable desktop access is a local process
-that holds your session, does the PGP work on your machine, and serves a standard
-protocol locally. That is what this is.
+> **Unofficial and reverse-engineered.** It talks to Proton's private API, which has no
+> stability guarantee, and it holds a decrypted Proton session. Run it only against your
+> own account on a machine you control. See [Limitations](#limitations).
 
-## Status: what works
+## What it does
 
-Tested end-to-end against the author's own Proton account (a ~3,100-event
-calendar) driven from Thunderbird:
+- **Read and write.** The calendar is fetched, decrypted locally and served over CalDAV.
+  Create, edit and delete round-trip to Proton and show up in the Proton web app.
+- **Inbound sync.** Each calendar's event loop is polled every 30 s and only the changed
+  events are patched into the cache. A CalendarServer **CTag** (a content hash) tells
+  the client to re-sync promptly. Calendars added or removed in Proton are noticed from
+  the account event loop; a removed calendar's poller and cache are dropped.
+- **On-disk cache.** Decrypted events are cached, so restarts are instant and queries are
+  served from memory.
+- **Unattended re-login.** The login password, 2FA (TOTP) seed and mailbox
+  password can be stored, encrypted, so an expired session is renewed by the bridge
+  itself, with exponential backoff and a cap of 3 attempts per hour.
+- **CAPTCHA recovery.** When Proton demands human verification, the bridge stops
+  calling Proton and waits. You run `caloxide verify`,
+  open a one-time link, answer the CAPTCHA, and it logs in again by itself. The popup
+  closes on its own once the CAPTCHA is passed.
+- **Alerts.** Problems are sent to a Discord webhook and/or an
+  [Apprise](https://github.com/caronc/apprise) endpoint, de-duplicated per kind.
+- **Container image and binaries.** A read-only, non-root image and, from the first
+  release after v0.3.0, static binaries, both with provenance attestations. See
+  [Supply chain](#supply-chain-and-releases).
 
-- **Read** — the entire calendar is fetched, decrypted locally, and served over
-  CalDAV, including encrypted-and-unsigned events and recurring-event overrides.
-- **Write** — create, edit, and delete round-trip to Proton and appear in the
-  Proton web app; a client-created event stays visible in the client immediately
-  (no manual refresh).
-- **Inbound sync** — changes made in Proton (or on another device) are pulled
-  into the local cache within ~30 s by polling Proton's calendar event loop, and
-  surfaced to the client via a CalendarServer **CTag** so it re-syncs promptly
-  instead of on its slow default interval.
-- **On-disk cache** — decrypted events are cached locally, so restarts are
-  instant and per-request queries are served from memory rather than re-walking
-  and re-decrypting the whole calendar.
+Mail, IMAP, SMTP and CardDAV code is inherited from hydroxide and is not the focus here.
 
-**Please read the [Limitations & caveats](#limitations--caveats) section below
-before relying on this.** It is an unofficial bridge over a reverse-engineered,
-end-to-end-encrypted service and comes with real, specific caveats.
+## Quick start
 
-## Design intent
-
-Protoxide is built to be driven by a CalDAV client that handles its own
-invitation scheduling **client-side** (Thunderbird's "Prefer client-side email
-scheduling" option). Under that model the bridge never implements CalDAV
-server-side scheduling (RFC 6638): the client sends iTIP/iMIP invitations over
-its own SMTP identity and processes RSVP replies, while the bridge only has to
-store and serve events as ordinary CalDAV objects. This keeps the bridge
-substantially smaller than a full scheduling server.
-
-## Limitations & caveats
-
-These are deliberate, known, and in most cases inherent to what this is. Read
-them.
-
-**Reliability / trust**
-
-- **Unofficial & reverse-engineered.** This talks to Proton's private, internal
-  API, which has no stability guarantee and no Proton QA. It can break without
-  warning whenever Proton changes their internals. Treat it as best-effort, not
-  as infrastructure.
-- **Single-account, single-developer testing.** It has been exercised against one
-  Proton account and its calendars only. Multi-account, multi-calendar, and
-  many edge cases are unverified.
-- **Not a backup.** Do not treat the local cache as a backup, and do not rely on
-  this as the only path to your calendar data.
-
-**Authentication / session**
-
-- **Session durability is not seamless.** The bridge holds a Proton session
-  locally. When Proton's access/refresh token expires or is invalidated, the
-  bridge stops working and you must re-authenticate (`protoxide auth`). There is
-  no proven long-lived silent refresh yet. If [alerting](#alerting-apprise--ntfy-etc)
-  is configured you'll be notified when this happens.
-- **One-time human verification (CAPTCHA) on login.** Proton's anti-abuse system
-  challenges new logins; the `auth` flow opens a browser popup to solve it. This
-  is expected on first login and occasionally thereafter.
-
-**Sync behaviour**
-
-- **Near-real-time, not instant push.** Inbound latency ≈ the ~30 s event-loop
-  poll **plus** your client's own refresh interval. Set the client's calendar
-  refresh interval low (e.g. 1 minute) — with CTag, those polls are cheap.
-- **Cold start is slow for large calendars.** The first run (or any run after the
-  cache is deleted) fetches and decrypts the entire calendar, which for a few
-  thousand events takes a few minutes. During that window the server returns
-  `503 / still loading` so the client waits and retries rather than seeing an
-  empty calendar. Subsequent starts are instant from the on-disk cache.
-
-**Feature gaps**
-
-- **No server-side scheduling (RFC 6638)** — by design (see *Design intent*).
-  Attendee scheduling is the client's job.
-- **Attendee data round-trip is not implemented.** `ATTENDEE` properties are not
-  yet written to or read from Proton's encrypted attendee cards.
-- **Recurring-exception edits are limited.** Editing a *single occurrence* of a
-  recurring series is not fully mapped to Proton's single-edit model and may not
-  round-trip correctly.
-- **Two upstream-disabled cryptographic checks remain disabled** (calendar
-  passphrase signature verification; the read-path MDC check). Some old/imported
-  events are served with an *unverified* signature — this is logged, not silent —
-  because decryptability was prioritised over signature verification for a
-  personal read bridge.
-
-**Data-at-rest / exposure**
-
-- **The on-disk cache holds decrypted event data**, at
-  `<config-dir>/protoxide/calcache-*.json` (mode `0600`). This is the same
-  trade-off every local calendar client makes (e.g. Thunderbird's own cache), but
-  it does mean plaintext calendar data sits on disk in your home directory.
-  Delete those files to purge it.
-- **The session is stored encrypted at rest** (NaCl secretbox, keyed by your
-  bridge password) at `<config-dir>/protoxide/auth.json`. It is still a
-  long-lived credential on your disk — protect it accordingly.
-- **Plain HTTP on localhost with HTTP Basic auth.** The CalDAV server binds to
-  `127.0.0.1:8081` by default and is not TLS-protected. **Keep it bound to
-  localhost. Do not expose it to a network.**
-
-**Scope**
-
-- **Mail / IMAP / SMTP / CardDAV are inherited from hydroxide and are _not_ the
-  focus of this fork.** They are not hardened or tested here and may or may not
-  work. Use the official Proton Mail Bridge for mail.
-- **Developed and tested on macOS.** The config-directory location follows Go's
-  `os.UserConfigDir` and should work cross-platform, but only macOS has been
-  exercised.
-
-## Setup
-
-Requires Go (see `go.mod`).
+### 1. Sign in (on a workstation, with a browser)
 
 ```bash
-go build -o protoxide ./cmd/protoxide
+caloxide auth <your-proton-address>
 ```
 
-**1. Authenticate** (interactive — the tool only ever receives your credentials
-from your own terminal, never from this repo or anywhere else). This opens a
-browser popup for Proton's human-verification challenge and prints a **bridge
-password** at the end; keep it:
+It asks for your Proton password and, for a 2FA account, optionally the **2FA secret key**
+(the base32 seed shown when 2FA was enabled, or set `CALOXIDE_TOTP_SECRET` /
+`CALOXIDE_TOTP_SECRET_FILE`). Providing it lets the bridge answer the 2FA challenge itself
+later; the seed is only stored after Proton accepted a code generated from it. If Proton
+shows a CAPTCHA, a local page opens to answer it.
+
+It prints a **bridge password** at the end. Keep it: it is the password your calendar
+client uses, **and** the key that encrypts everything stored in `auth.json`. The server
+never stores it.
+
+### 2. Run the server
+
+Container (recommended), with the state directory owned by uid 65532:
 
 ```bash
-./protoxide auth <your-proton-address>
+sudo install -d -o 65532 -g 65532 -m 0700 /srv/caloxide
+sudo cp ~/.config/caloxide/auth.json /srv/caloxide/caloxide/   # from step 1
+docker run -d --name caloxide --restart unless-stopped \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  -v /srv/caloxide:/data -p 127.0.0.1:8081:8081 \
+  ghcr.io/wentthefox/caloxide@sha256:<digest>
 ```
 
-**2. Run the CalDAV server:**
+Pin the **digest**, not a tag, and verify it first:
 
 ```bash
-./protoxide caldav
+gh attestation verify oci://ghcr.io/wentthefox/caloxide@sha256:<digest> --repo WentTheFox/caloxide
 ```
 
-It listens on `http://127.0.0.1:8081` and logs the first request from a client.
+Or run the binary directly: `caloxide caldav` (listens on `127.0.0.1:8081`).
 
-**3. Point your client at the calendar.** In Thunderbird, add a network calendar
-of type **CalDAV** using the *direct calendar URL* (not the base path):
+### 3. Add the calendar in Thunderbird
+
+Add a network calendar of type **CalDAV** using the direct calendar URL:
 
 ```
 http://127.0.0.1:8081/caldav/calendars/<your-calendar-id>
 ```
 
-Authenticate with your **Proton address** as the username and the **bridge
-password** as the password. Enable **"Prefer client-side email scheduling"** in
-the calendar's properties, and set the **refresh interval to 1 minute**.
+User = your Proton address, password = the bridge password. Enable **Prefer client-side
+email scheduling** and set the refresh interval to 1 minute. The first sync of a big
+calendar takes minutes; the server answers `503` until it is loaded. The base CalDAV
+endpoint lists your calendars, and the ID is the last path segment of a calendar's href.
 
-> Discovering `<your-calendar-id>`: the base CalDAV endpoint lists your
-> calendars; the ID is the last path segment of the calendar's href.
+The server speaks **plain HTTP with Basic auth**, and that password is also the key to
+your stored session. Keep it on `127.0.0.1`, or put it behind a TLS reverse proxy with a
+LAN-only access list. Never expose it to the internet.
 
-## Running as a service (macOS)
+## When Proton asks for a CAPTCHA
 
-To run the CalDAV bridge headlessly — starting at login, restarting if it
-crashes, and coming back after a reboot — install it as a per-user `launchd`
-agent:
-
-```bash
-# optionally set alerting first (see below)
-./service/install.sh
-```
-
-The installer builds protoxide, copies the binary and a runner into
-`~/Library/Application Support/protoxide/bin/`, writes a LaunchAgent to
-`~/Library/LaunchAgents/com.mathewcsims.protoxide.caldav.plist`, and loads it.
-Re-run it any time to rebuild and reload. Manage it with:
+The bridge latches into a waiting state (no calls to Proton) and alerts you. Then:
 
 ```bash
-launchctl list | grep protoxide          # is it running?
-./service/uninstall.sh                    # remove (add --purge to delete the binary too)
+caloxide verify            # in the container: docker exec caloxide /caloxide -config-home /data verify
 ```
 
-Logs go to `~/Library/Logs/protoxide/caldav.log` (size-rotated at 10 MiB on
-restart). Per-request logging is off unless you run with `-debug`, so the log
-stays small in normal use.
+It prints a link built from `CALOXIDE_PUBLIC_URL`, valid for 10 minutes and usable once.
+The page only exists while a window is open (otherwise it answers 404) and the command is
+refused unless a CAPTCHA is actually pending. Open it, press *Open the CAPTCHA*, follow the
+steps on the page, and the bridge logs in again with no restart and no new bridge password.
+Both pages follow your browser's light or dark theme. The mechanism and the findings behind
+it are in [`docs/design/unattended-reauth.md`](docs/design/unattended-reauth.md).
 
-**Prerequisite:** the service uses the encrypted session created by
-`./protoxide auth <your-proton-address>`, which you must run once first (it is
-interactive — CAPTCHA and bridge password). If the Proton session later expires,
-the service can't refresh it silently; you'll need to re-run `auth`.
+## Configuration
 
-### Running a manual session (debugging)
+State lives in `<config-home>/caloxide/` (`auth.json`, `calcache-*.json`, the control
+socket). `-config-home` sets it; the image uses `/data`.
 
-Once the service is installed it is the **only** thing that should bind
-`127.0.0.1:8081`. If you start protoxide by hand while the service is running,
-the second instance will fail to bind the port and (under launchd) crash-loop.
-So **stop the service first**, run your manual session, then start it again:
-
-```bash
-PLIST=~/Library/LaunchAgents/com.mathewcsims.protoxide.caldav.plist
-
-launchctl unload "$PLIST"          # stop the managed service
-./protoxide -debug caldav          # manual session with verbose per-request logs
-                                   # (Ctrl-C to stop)
-launchctl load -w "$PLIST"         # hand control back to the service
-```
-
-Use `-debug` for the verbose per-request logging that is otherwise suppressed.
-The manual instance shares the same on-disk cache and session as the service, so
-nothing needs re-syncing when you switch back.
-
-## Alerting (Apprise → ntfy, etc.)
-
-protoxide can push operational problems to an [Apprise](https://github.com/caronc/apprise)
-endpoint (which can fan out to ntfy and anything else Apprise supports). It's
-**off unless configured** and never blocks or breaks the bridge if the endpoint
-is unreachable. Configure via environment variables (the installer bakes them
-into the LaunchAgent; for a manual run, export them first):
-
-| Variable | Meaning |
+| Setting | Meaning |
 | --- | --- |
-| `PROTOXIDE_APPRISE_URL` | Apprise notify endpoint. For a persistent Apprise config: `http://<host>:8000/notify/<key>`. Required to enable alerts. |
-| `PROTOXIDE_APPRISE_URLS` | Only for Apprise's *stateless* endpoint (`…/notify`): the target URL(s), e.g. `ntfy://<host>/protoxide`. Leave blank when using a `/notify/<key>` config endpoint. |
+| `CALOXIDE_PUBLIC_URL` | Address clients use; the one-time CAPTCHA link is built from it. |
+| `CALOXIDE_TOTP_SECRET`, `CALOXIDE_TOTP_SECRET_FILE` | 2FA seed for `auth` (or enter it at the prompt). |
+| `CALOXIDE_DISCORD_WEBHOOK_URL`, `…_FILE` | Discord alerts (mentions disabled; the URL is never logged). |
+| `CALOXIDE_APPRISE_URL`, `CALOXIDE_APPRISE_URLS` | Apprise alerts: a `/notify/<key>` endpoint, or the stateless `/notify` endpoint plus target URLs. |
+| `CALOXIDE_PROTONDRIVE_APP_VERSION` | App version to present (same name as rclone's option). Leave unset: see [`FORK.md`](FORK.md). |
+| `HYDROXIDE_BRIDGE_PASS` | Bridge password, to skip the prompt (inherited name). |
 
-Alerts are sent (and de-duplicated for 10 minutes per kind, so a persistent
-fault doesn't flood you) for:
+Useful flags: `-caldav-host`, `-caldav-port`, `-config-home`, `-debug`, `-app-version`
+(alias `-protondrive-app-version`), `-user-agent`, `-proxy-url`, `-tls-cert`/`-tls-key`.
+Run `caloxide -h` for all of them and the commands (`auth`, `caldav`, `verify`, `status`,
+`push-probe`, and the inherited mail ones).
 
-- **Auth failure** — a rejected CalDAV request, most often an **expired Proton
-  session** (you'll be told to re-run `auth`).
-- **Inbound poll failing / degraded** — the calendar event-loop poller can't
-  reach Proton (inbound sync stalled — usually also a session issue).
-- **Calendar write failed** — an event couldn't be written back to Proton.
-- **Handler panic** — an unexpected fault while serving a request.
-- **Process crash** — the service was killed by a signal (the runner reports
-  this on the way down; `launchd` then restarts it).
+Alerts are sent for: a rejected CalDAV login (usually an expired session), a stalled
+inbound poll, a failed calendar write, a handler panic, a re-login that needs you, and
+(macOS service only) a crash.
 
-Test your endpoint independently, e.g.:
+## Sync behaviour
+
+- **Latency** is about the 30 s poll plus your client's refresh interval. Set the client
+  to refresh every minute; with the CTag those polls are cheap.
+- **Failures back off** exponentially (30 s up to 10 min) instead of retrying a dead
+  session every 30 s.
+- **Push is not available yet.** Proton's web client has a push channel (server-sent
+  events, behind the `PingOMatic` flag) that caloxide already implements, but Proton's API
+  currently answers 404 for it, so polling is the only mechanism. If Proton enables it,
+  pings will wake the pollers and the safety-net poll relaxes to 5 minutes by itself.
+  Details and how to check: [`FORK.md`](FORK.md). `caloxide push-probe <address>` prints
+  what the channel does, read-only.
+- **Cold start** (first run, or after deleting the cache) fetches and decrypts the whole
+  calendar, which takes minutes for thousands of events.
+
+## Limitations
+
+- **Unofficial.** It can break whenever Proton changes its internals. Treat it as
+  best-effort, keep the read-only ICS subscription as a fallback, and do not treat the
+  cache as a backup.
+- **Little real-world testing.** One account, a handful of calendars. Re-login and CAPTCHA
+  recovery are tested against a fake API; the full cycle on a real revoked session has not
+  been run yet.
+- **No server-side scheduling (RFC 6638).** Invitations are the client's job, hence the
+  *client-side scheduling* setting.
+- **Attendee data does not round-trip** through Proton's encrypted attendee cards, and
+  editing a single occurrence of a recurring series is not fully mapped.
+- **Signatures are not enforced on read.** An event whose signature does not verify is
+  served and logged ("serving event with unverified signature"), not dropped, so that old
+  or imported events stay visible.
+- **Secrets on disk.** `auth.json` holds the session and, if you provided them, the login
+  password and 2FA seed, sealed with NaCl secretbox under the bridge password. Whoever has
+  that file *and* the bridge password has your account. The cache holds your calendar in
+  plaintext (mode 0600); delete `calcache-*.json` to purge it.
+- **Scope.** Calendar is what is maintained. Mail, IMAP, SMTP and CardDAV are inherited
+  and untested; use the official Proton Mail Bridge for mail.
+
+## Supply chain and releases
+
+The fork exists so that the code holding a Proton session has been reviewed and does not
+change underneath you. Upstream is never merged automatically; Go modules must be at least 14 days old; every
+action is pinned to a commit SHA and the base image to a digest; a source audit fails on
+any new outbound host, sensitive API, module, binary or hidden text; the vendored
+`go-webdav` must equal upstream plus a recorded patch; `govulncheck` and CodeQL run on
+every change. The full policy is in [`FORK.md`](FORK.md).
+
+Pushing a `vX.Y.Z` tag on `main` publishes the multi-arch (amd64, arm64) image to
+`ghcr.io/wentthefox/caloxide` with an SBOM and a signed provenance attestation, then
+creates a GitHub release with static binaries for Linux, macOS and Windows (amd64 and
+arm64), a `SHA256SUMS` file and an attestation per binary:
 
 ```bash
-curl -s -H 'Content-Type: application/json' \
-  -d '{"title":"protoxide test","body":"hello","type":"info"}' \
-  "$PROTOXIDE_APPRISE_URL"
+gh attestation verify caloxide_vX.Y.Z_linux_amd64 --repo WentTheFox/caloxide
 ```
+
+`.github/scripts/build-release.sh <version>` builds the same binaries locally.
+
+## Running as a macOS service
+
+`./service/install.sh` builds caloxide and installs a per-user LaunchAgent
+(`com.wentthefox.caloxide.caldav`) that starts at login and restarts on a crash; logs go
+to `~/Library/Logs/caloxide/caldav.log`. `./service/uninstall.sh` removes it. Stop the
+service before running a manual session, since only one process can bind `127.0.0.1:8081`.
 
 ## How it works
 
-- **Auth** (`auth/`, `protonmail/`): SRP login against Proton, with a
-  browser-popup flow for the human-verification (CAPTCHA) challenge. The session
-  is sealed with NaCl secretbox under your bridge password.
-- **Cache** (`caldav/cache.go`): the whole calendar is fetched and decrypted once
-  into an in-memory map (indexed by a URL/XML-safe path token → Proton event ID
-  for O(1) lookups), persisted to disk, and served from memory. Local writes are
-  protected from being clobbered by a concurrent reload.
-- **Poller** (`caldav/poller.go`): polls Proton's calendar event loop
-  (`/calendar/v1/{cal}/modelevents/{cursor}`) every 30 s and patches only the
-  changed events into the cache.
-- **CTag** (`third_party/go-webdav`): upstream go-webdav can't advertise a change
-  token, so it is vendored (v0.6.0, MIT) with a small additive patch to emit the
-  CalendarServer `getctag` property. See
-  [`third_party/go-webdav/PROTOXIDE-PATCH.md`](third_party/go-webdav/PROTOXIDE-PATCH.md).
-  The token is a content hash that changes on any add/edit/delete and is stable
-  across restarts.
+- `auth/`, `protonmail/`: SRP login, session handling, re-login with backoff, the
+  verification window, and the Proton API client.
+- `caldav/`: CalDAV backend, the decrypted cache, per-calendar pollers, and the optional
+  push wiring.
+- `webverify/`: the one-time CAPTCHA page and the control socket behind `caloxide verify`.
+- `notify/`: Discord and Apprise alerts. `cookiestore/`, `totp/`, `backoff/`: small
+  single-purpose packages.
+- `third_party/go-webdav`: vendored v0.6.0 with a small patch to emit the CTag, see
+  [`CALOXIDE-PATCH.md`](third_party/go-webdav/CALOXIDE-PATCH.md).
+
+## Renamed from protoxide
+
+The project was renamed in October 2026. Existing deployments keep working for now:
+
+- `PROTOXIDE_*` environment variables are still read when the `CALOXIDE_*` one is unset
+  (a log line asks you to rename them).
+- A state directory named `protoxide` is still used when no `caloxide` one exists.
+- Images before the rename are at `ghcr.io/wentthefox/protoxide`; new ones are at
+  `ghcr.io/wentthefox/caloxide` (a different package, so the digest changes).
+- The Go module path is unchanged (`github.com/mathewcsims/protoxide`) so that reviewing
+  upstream changes stays simple.
+- The LaunchAgent label changed; re-run `./service/install.sh`.
 
 ## Changes from upstream
 
-- **Renamed / re-moduled** as `protoxide`; full MIT attribution to hydroxide and
-  ferroxide retained (`LICENSE`, `README.upstream.md`).
-- **Write path made to actually work.** Fixed the create/edit round-trip through
-  a chain of real bugs: SEQUENCE monotonicity and the `SEQUENCE;VALUE=TEXT`
-  malformation Proton rejects with a 500; address-key signing; and preserving the
-  client's UID as the stable CalDAV path so created events are recognised by the
-  client immediately.
-- **Decryption fix** — `CalendarEventCardType.Encrypted()` didn't recognise the
-  encrypted-but-unsigned card type (type 1), so those events were served as raw
-  ciphertext and dropped. Now decrypted.
-- **URL/XML-safe path tokens** — event hrefs are derived from the iCalendar UID,
-  hex-encoded when the UID contains characters that would break the href.
-- **Cache, poller, and CTag** as described above (on-disk cache, inbound
-  event-loop delta sync, change token).
-- **Pagination fix** — calendar listings follow Proton's pagination to completion
-  instead of silently truncating large calendars.
-
-### Still to do
-
-- Durable, silent session refresh at token expiry.
-- Attendee data round-trip through Proton's encrypted attendee cards.
-- Recurring-occurrence single-edit mapping.
-- Re-enabling the two upstream-disabled cryptographic checks, validated live.
-
-## Security & trust
-
-This talks to an **unofficial, reverse-engineered** Proton API and holds your
-**decrypted session locally** — the same trust model as the official Bridge, but
-without Proton's QA. Run it only against your own account, on a machine you
-control. Your session and keys live in a local config directory (never in this
-repository); do not commit that directory or any exported keys. See
-[Limitations & caveats](#limitations--caveats) for the full picture.
+Beyond the original write-path, decryption and pagination fixes (create/edit round-trip,
+unsigned-card decryption, URL-safe event paths, full calendar listings), this fork adds
+the on-disk cache, event-loop delta sync and CTag; the unattended re-login with stored
+credentials and TOTP; the bounded recursion and request gate that stop a dead session
+from hammering Proton; the CAPTCHA verification window; Discord alerts; persistent
+Proton cookies; the dormant push client; the removed-calendar handling; the container
+image, release binaries and audit guardrails; and the rename.
 
 ## License
 
-MIT — Copyright (c) 2017 emersion, (c) 2023 acheong08, (c) 2026 Mathew Sims.
-See [`LICENSE`](LICENSE). The original upstream README is preserved as
-[`README.upstream.md`](README.upstream.md). The vendored dependency under
-`third_party/go-webdav` retains its own MIT license.
-```
+MIT. Copyright (c) 2017 emersion, (c) 2023 acheong08, (c) 2026 Mathew Sims; modifications
+by WentTheFox under the same license. See [`LICENSE`](LICENSE). The original README is
+kept as [`README.upstream.md`](README.upstream.md). The vendored dependency under
+`third_party/go-webdav` keeps its own MIT license.

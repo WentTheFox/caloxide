@@ -198,7 +198,7 @@ func authenticate(c protonAPI, cachedAuth *CachedAuth, username string, rl *relo
 			}
 		} else {
 			if cachedAuth.LoginPassword == "" {
-				return nil, fmt.Errorf("cannot re-authenticate: no password is stored; run `protoxide auth %s`", username)
+				return nil, fmt.Errorf("cannot re-authenticate: no password is stored; run `caloxide auth %s`", username)
 			}
 			authInfo, err := c.AuthInfo(username)
 			if err != nil {

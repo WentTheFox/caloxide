@@ -23,7 +23,7 @@ rm -rf "$work/a/.git"
 # Read git's index, not the working tree, so local CRLF/autocrlf settings can't cause drift.
 git -C "$ROOT" ls-files -z -- third_party/go-webdav | (cd "$ROOT" && xargs -0 git checkout-index --prefix="$work/full/" --)
 mv "$work/full/third_party/go-webdav" "$work/b"
-rm -f "$work/b/PROTOXIDE-PATCH.md"
+rm -f "$work/b/CALOXIDE-PATCH.md"
 
 actual="$work/actual.patch"
 (cd "$work" && git diff --no-index --no-color a b > "$actual") || true

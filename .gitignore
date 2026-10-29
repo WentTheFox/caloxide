@@ -16,11 +16,11 @@
 auth.json
 
 # Built binary
-/protoxide
-/cmd/protoxide/protoxide
+/caloxide
+/cmd/caloxide/caloxide
 
 # Runtime auth / session / local state — MUST never be committed.
-# (The real config dir lives outside the repo, under $XDG_CONFIG_HOME/protoxide;
+# (The real config dir lives outside the repo, under $XDG_CONFIG_HOME/caloxide;
 #  these patterns are defensive in case anything is ever run from the tree.)
 *.db
 *.bolt
@@ -28,12 +28,12 @@ auth.json
 *.pem
 secrets*
 *.token
-protoxide.json
+caloxide.json
 # Decrypted calendar cache — plaintext event data. Never commit.
 calcache-*.json
-# Any local protoxide config directory checked out into the tree.
+# Any local caloxide config directory checked out into the tree.
 /config-dir/
-/.protoxide/
+/.caloxide/
 
 # OS / editor cruft
 .DS_Store

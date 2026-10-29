@@ -35,7 +35,7 @@ func (b *backend) pollCalendar(calID string, wake <-chan struct{}, stop <-chan s
 	cursor, err := b.c.GetLatestCalendarModelEventID(calID)
 	if err != nil {
 		log.Printf("poller %s: could not seed cursor, delta sync disabled (falling back to periodic reload): %v", calID, err)
-		notify.Send("warning", "poller-seed", "protoxide: inbound sync degraded",
+		notify.Send("warning", "poller-seed", "caloxide: inbound sync degraded",
 			fmt.Sprintf("Could not start the calendar event-loop poller: %v. Inbound changes will only appear on the 30-minute reload.", err))
 		return
 	}
@@ -69,7 +69,7 @@ func (b *backend) pollCalendar(calID string, wake <-chan struct{}, stop <-chan s
 			evs, err := b.c.GetCalendarModelEvents(calID, cursor)
 			if err != nil {
 				log.Printf("poller %s: poll failed: %v", calID, err)
-				notify.Send("warning", "poller-poll", "protoxide: inbound poll failing",
+				notify.Send("warning", "poller-poll", "caloxide: inbound poll failing",
 					fmt.Sprintf("Polling Proton's calendar event loop failed: %v. Inbound sync is stalled; this often means the Proton session needs refreshing.", err))
 				failed = true
 				break

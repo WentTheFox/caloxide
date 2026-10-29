@@ -549,7 +549,7 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 	newEvent, err := b.c.UpdateCalendarEvent(calId, evtArg, writeEvent, b.privateKeys)
 	if err != nil {
 		log.Printf("caldav/PutCalendarObject: write FAILED (token=%s): %v", token, err)
-		notify.Send("failure", "caldav-write", "protoxide: calendar write failed",
+		notify.Send("failure", "caldav-write", "caloxide: calendar write failed",
 			fmt.Sprintf("Writing an event to Proton failed: %v", err))
 		return nil, fmt.Errorf("caldav/PutCalendarObject: error updating calendar event (calId: %s, token: %s): (%w)", calId, token, err)
 	}
@@ -624,7 +624,7 @@ func (b *backend) CurrentUserPrincipal(ctx context.Context) (string, error) {
 
 func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username string, events <-chan *protonmail.Event) http.Handler {
 	if len(privateKeys) == 0 {
-		panic("protoxide/caldav: no private key available")
+		panic("caloxide/caldav: no private key available")
 	}
 
 	keyCache := map[string]openpgp.EntityList{username: privateKeys}

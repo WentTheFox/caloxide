@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install protoxide's CalDAV bridge as a per-user launchd service (macOS).
+# Install caloxide's CalDAV bridge as a per-user launchd service (macOS).
 #
 # It starts at login, restarts if it crashes, and comes back after a reboot
 # (a reboot leads to a login, which loads the agent). Optionally wires up
@@ -7,36 +7,36 @@
 #
 # Usage:
 #   ./service/install.sh
-#   PROTOXIDE_APPRISE_URL=http://host:8000/notify/protoxide ./service/install.sh
+#   CALOXIDE_APPRISE_URL=http://host:8000/notify/caloxide ./service/install.sh
 #
 # Re-run any time to rebuild and reload with new settings.
 
 set -eu
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
-APP_DIR="$HOME/Library/Application Support/protoxide"
+APP_DIR="$HOME/Library/Application Support/caloxide"
 BIN_DIR="$APP_DIR/bin"
-LOG_DIR="$HOME/Library/Logs/protoxide"
+LOG_DIR="$HOME/Library/Logs/caloxide"
 LA_DIR="$HOME/Library/LaunchAgents"
-LABEL="com.mathewcsims.protoxide.caldav"
+LABEL="com.wentthefox.caloxide.caldav"
 PLIST="$LA_DIR/$LABEL.plist"
 LOG="$LOG_DIR/caldav.log"
 
-APPRISE_URL="${PROTOXIDE_APPRISE_URL:-}"
-APPRISE_URLS="${PROTOXIDE_APPRISE_URLS:-}"
+APPRISE_URL="${CALOXIDE_APPRISE_URL:-}"
+APPRISE_URLS="${CALOXIDE_APPRISE_URLS:-}"
 if [ -z "$APPRISE_URL" ]; then
-	printf "Apprise notify URL for alerts (e.g. http://host:8000/notify/protoxide)\n  [blank = no alerts]: "
+	printf "Apprise notify URL for alerts (e.g. http://host:8000/notify/caloxide)\n  [blank = no alerts]: "
 	read -r APPRISE_URL || APPRISE_URL=""
 fi
 if [ -n "$APPRISE_URL" ] && [ -z "$APPRISE_URLS" ]; then
-	printf "Apprise stateless target URL(s) — ONLY if your endpoint is the bare /notify\n  (e.g. ntfy://host/protoxide); blank for a /notify/<key> config endpoint: "
+	printf "Apprise stateless target URL(s) — ONLY if your endpoint is the bare /notify\n  (e.g. ntfy://host/caloxide); blank for a /notify/<key> config endpoint: "
 	read -r APPRISE_URLS || APPRISE_URLS=""
 fi
 
-echo "Building protoxide..."
+echo "Building caloxide..."
 mkdir -p "$BIN_DIR" "$LOG_DIR" "$LA_DIR"
-( cd "$REPO_DIR" && go build -o "$BIN_DIR/protoxide" ./cmd/protoxide )
-install -m 0755 "$REPO_DIR/service/protoxide-caldav-run.sh" "$BIN_DIR/protoxide-caldav-run.sh"
+( cd "$REPO_DIR" && go build -o "$BIN_DIR/caloxide" ./cmd/caloxide )
+install -m 0755 "$REPO_DIR/service/caloxide-caldav-run.sh" "$BIN_DIR/caloxide-caldav-run.sh"
 
 # Unload any previous instance before rewriting the plist.
 launchctl unload "$PLIST" 2>/dev/null || true
@@ -50,17 +50,17 @@ cat >"$PLIST" <<EOF
 	<string>$LABEL</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>$BIN_DIR/protoxide-caldav-run.sh</string>
+		<string>$BIN_DIR/caloxide-caldav-run.sh</string>
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>
-		<key>PROTOXIDE_BIN</key>
-		<string>$BIN_DIR/protoxide</string>
-		<key>PROTOXIDE_LOG</key>
+		<key>CALOXIDE_BIN</key>
+		<string>$BIN_DIR/caloxide</string>
+		<key>CALOXIDE_LOG</key>
 		<string>$LOG</string>
-		<key>PROTOXIDE_APPRISE_URL</key>
+		<key>CALOXIDE_APPRISE_URL</key>
 		<string>$APPRISE_URL</string>
-		<key>PROTOXIDE_APPRISE_URLS</key>
+		<key>CALOXIDE_APPRISE_URLS</key>
 		<string>$APPRISE_URLS</string>
 		<key>PATH</key>
 		<string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin</string>
@@ -88,21 +88,21 @@ launchctl load -w "$PLIST"
 
 echo
 echo "Installed and started: $LABEL"
-echo "  binary : $BIN_DIR/protoxide"
+echo "  binary : $BIN_DIR/caloxide"
 echo "  logs   : $LOG (and $LOG_DIR/launchd.log)"
 echo "  plist  : $PLIST"
 if [ -n "$APPRISE_URL" ]; then
 	echo "  alerts : ON -> $APPRISE_URL"
 else
-	echo "  alerts : OFF (set PROTOXIDE_APPRISE_URL and re-run to enable)"
+	echo "  alerts : OFF (set CALOXIDE_APPRISE_URL and re-run to enable)"
 fi
 echo
 echo "It is listening on http://127.0.0.1:8081. Manage with:"
-echo "  launchctl list | grep protoxide"
+echo "  launchctl list | grep caloxide"
 echo "  launchctl unload $PLIST   # stop"
 echo "  launchctl load -w $PLIST  # start"
 echo "  ./service/uninstall.sh    # remove"
 echo
-echo "NOTE: this needs a prior './protoxide auth <your-proton-address>' so the"
+echo "NOTE: this needs a prior './caloxide auth <your-proton-address>' so the"
 echo "encrypted session exists. If the Proton session later expires you'll get an"
 echo "alert (if configured) and must re-run auth."

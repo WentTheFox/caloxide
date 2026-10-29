@@ -108,7 +108,7 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request, token, cspNonce
 	}
 }
 
-// The functions below let other front ends (the local helper that `protoxide auth`
+// The functions below let other front ends (the local helper that `caloxide auth`
 // runs on a workstation) serve exactly the same page: one design, one security
 // policy, one dark-mode implementation, one place to fix.
 
@@ -233,7 +233,20 @@ window.addEventListener('message', function (e) {
   if (!popup || e.source !== popup || e.origin !== 'https://verify-api.proton.me') return;
   if (!d || typeof d.pxHV !== 'string' || d.pxHV.length > 12288) return;
   document.getElementById('input').value = d.pxHV;
-  document.getElementById('status').textContent = 'Token received from the popup. Press Submit.';
+  closePopup();
+  document.getElementById('status').textContent = 'CAPTCHA passed, popup closed. Press Submit.';
 });
+// A pasted console line means the CAPTCHA was solved as well. Only the pm_captcha message
+// counts: the other line the popup logs is not the token, so it keeps the popup open.
+document.getElementById('input').addEventListener('input', function () {
+  if (this.value.indexOf('pm_captcha') !== -1 && closePopup()) {
+    document.getElementById('status').textContent = 'CAPTCHA passed, popup closed. Press Submit.';
+  }
+});
+function closePopup() {
+  if (!popup || popup.closed) return false;
+  try { popup.close(); } catch (err) { return false; }
+  return true;
+}
 </script>
 </body></html>`))

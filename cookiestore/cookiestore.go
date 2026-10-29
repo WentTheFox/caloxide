@@ -5,7 +5,7 @@
 // official Proton Bridge persists its cookies for the same reason.
 //
 // The exported bytes identify a client to Proton and must be stored with the same
-// care as a session token (protoxide keeps them inside the encrypted auth.json).
+// care as a session token (caloxide keeps them inside the encrypted auth.json).
 package cookiestore
 
 import (

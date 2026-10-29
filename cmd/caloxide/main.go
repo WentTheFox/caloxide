@@ -33,9 +33,9 @@ import (
 	"github.com/mathewcsims/protoxide/imports"
 	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
+	smtpbackend "github.com/mathewcsims/protoxide/smtp"
 	"github.com/mathewcsims/protoxide/totp"
 	"github.com/mathewcsims/protoxide/webverify"
-	smtpbackend "github.com/mathewcsims/protoxide/smtp"
 )
 
 const (
@@ -67,7 +67,7 @@ func makeHTTPClientFromProxy(proxyArg string) (*http.Client, error) {
 		if strings.HasPrefix(proxyArg, "socks5://") {
 			proxyArg = strings.Replace(proxyArg, "socks5://", "", 1)
 		}
-		fmtProxy = fmt.Sprintf("socks5://protoxide_%s::@%s", un, proxyArg)
+		fmtProxy = fmt.Sprintf("socks5://caloxide_%s::@%s", un, proxyArg)
 
 	} else {
 		if !strings.Contains(proxyArg, "://") {
@@ -110,7 +110,7 @@ func newClient() *protonmail.Client {
 
 // appVersionEnv sets the app version when no flag does. The name mirrors rclone's
 // --protondrive-app-version option.
-const appVersionEnv = "PROTOXIDE_PROTONDRIVE_APP_VERSION"
+const appVersionEnv = "CALOXIDE_PROTONDRIVE_APP_VERSION"
 
 // appVersionRE is what an app version may contain. It ends up in an HTTP header, so
 // anything outside this set (spaces, control characters, newlines) is refused.
@@ -130,13 +130,13 @@ func resolveAppVersion(flagGiven bool, flagValue, env string) (string, error) {
 }
 
 // startVerification prepares the one-time CAPTCHA page and the control socket that
-// opens it. The page is a 404 unless `protoxide verify` opened a window, which in turn
+// opens it. The page is a 404 unless `caloxide verify` opened a window, which in turn
 // is refused unless a CAPTCHA is actually pending.
 func startVerification(m *auth.Manager) http.Handler {
 	if !m.ReloginEnabled() {
 		return nil
 	}
-	publicURL := strings.TrimRight(os.Getenv("PROTOXIDE_PUBLIC_URL"), "/")
+	publicURL := strings.TrimRight(config.Getenv("CALOXIDE_PUBLIC_URL"), "/")
 	sock, err := config.Path("control.sock")
 	if err != nil {
 		log.Printf("verify: control socket unavailable: %v", err)
@@ -146,25 +146,25 @@ func startVerification(m *auth.Manager) http.Handler {
 		log.Printf("verify: control socket unavailable: %v", err)
 		return nil
 	}
-	log.Printf("verify: if Proton asks for a CAPTCHA, run `protoxide verify` inside the container for a one-time link")
+	log.Printf("verify: if Proton asks for a CAPTCHA, run `caloxide verify` inside the container for a one-time link")
 	return webverify.Handler(m)
 }
 
 // localTOTPSeed returns the 2FA seed to store with the session: from
-// PROTOXIDE_TOTP_SECRET, or a file named by PROTOXIDE_TOTP_SECRET_FILE, else a hidden
+// CALOXIDE_TOTP_SECRET, or a file named by CALOXIDE_TOTP_SECRET_FILE, else a hidden
 // prompt that may be left empty (then a one-time code is typed instead and nothing is
 // stored). The seed is kept only in the encrypted auth.json.
 func localTOTPSeed() string {
-	direct, file := os.Getenv("PROTOXIDE_TOTP_SECRET"), os.Getenv("PROTOXIDE_TOTP_SECRET_FILE")
+	direct, file := config.Getenv("CALOXIDE_TOTP_SECRET"), config.Getenv("CALOXIDE_TOTP_SECRET_FILE")
 	switch {
 	case direct != "" && file != "":
-		log.Fatal("PROTOXIDE_TOTP_SECRET and PROTOXIDE_TOTP_SECRET_FILE are both set; use one")
+		log.Fatal("CALOXIDE_TOTP_SECRET and CALOXIDE_TOTP_SECRET_FILE are both set; use one")
 	case direct != "":
 		return strings.TrimSpace(direct)
 	case file != "":
 		b, err := os.ReadFile(file)
 		if err != nil {
-			log.Fatal("PROTOXIDE_TOTP_SECRET_FILE: could not read file")
+			log.Fatal("CALOXIDE_TOTP_SECRET_FILE: could not read file")
 		}
 		return strings.TrimSpace(string(b))
 	}
@@ -243,6 +243,23 @@ func listenAndServeIMAP(addr string, debug bool, authManager *auth.Manager, even
 
 // verify, if not nil, serves the one-time CAPTCHA page under webverify.PathPrefix. It
 // answers 404 unless a verification window is open.
+// isBrowserProbe reports a request that looks like someone opening the address in a
+// browser: a GET or HEAD, without credentials, for a path no calendar client uses. It
+// gets a plain 404 and no Basic-auth challenge, so a browser shows no login dialog and
+// the address does not advertise that there is something to log in to. CalDAV clients
+// use the other methods (PROPFIND, REPORT, OPTIONS, ...) and the /caldav/ paths, which
+// keep their challenge.
+func isBrowserProbe(req *http.Request) bool {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		return false
+	}
+	if _, _, ok := req.BasicAuth(); ok {
+		return false
+	}
+	p := req.URL.Path
+	return p != "/caldav" && !strings.HasPrefix(p, "/caldav/") && p != "/.well-known/caldav"
+}
+
 func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager *events.Manager, tlsConfig *tls.Config, verify http.Handler) error {
 	handlers := make(map[string]http.Handler)
 
@@ -256,7 +273,7 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("CalDAV: recovered panic on %s %s: %v", req.Method, req.URL.Path, r)
-					notify.Send("failure", "caldav-panic", "protoxide: CalDAV handler panic",
+					notify.Send("failure", "caldav-panic", "caloxide: CalDAV handler panic",
 						fmt.Sprintf("%s %s panicked: %v", req.Method, req.URL.Path, r))
 					resp.WriteHeader(http.StatusInternalServerError)
 				}
@@ -264,6 +281,11 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 
 			if verify != nil && strings.HasPrefix(req.URL.Path, webverify.PathPrefix) {
 				verify.ServeHTTP(resp, req)
+				return
+			}
+
+			if isBrowserProbe(req) {
+				http.NotFound(resp, req)
 				return
 			}
 
@@ -287,11 +309,11 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 					// password is fixed, so this appearing after it worked means re-auth
 					// is needed. Debounced so a broken session doesn't flood.
 					resp.WriteHeader(http.StatusUnauthorized)
-					notify.Send("failure", "caldav-auth", "protoxide: CalDAV auth failed",
-						fmt.Sprintf("Rejected %s for %q — the Proton session may have expired; run `protoxide auth %s`.", req.Method, username, username))
+					notify.Send("failure", "caldav-auth", "caloxide: CalDAV auth failed",
+						fmt.Sprintf("Rejected %s for %q — the Proton session may have expired; run `caloxide auth %s`.", req.Method, username, username))
 				} else {
 					resp.WriteHeader(http.StatusInternalServerError)
-					notify.Send("failure", "caldav-auth-err", "protoxide: CalDAV auth error",
+					notify.Send("failure", "caldav-auth-err", "caloxide: CalDAV auth error",
 						fmt.Sprintf("Error authenticating %q: %v", username, err))
 				}
 				io.WriteString(resp, err.Error())
@@ -373,20 +395,22 @@ func isMbox(br *bufio.Reader) (bool, error) {
 	return bytes.Equal(b, prefix), nil
 }
 
-const usage = `usage: protoxide [options...] <command>
+const usage = `usage: caloxide [options...] <command>
 Commands:
-	auth <username>		Login to ProtonMail via protoxide
+	auth <username>		Login to ProtonMail via caloxide
 	import-session <username>	Seed auth from an existing logged-in Proton web session (skips login/CAPTCHA)
-	carddav			Run protoxide as a CardDAV server
-	caldav			Run protoxide as a CalDAV server
+	carddav			Run caloxide as a CardDAV server
+	caldav			Run caloxide as a CalDAV server
 	export-secret-keys <username> Export secret keys
-	imap			Run protoxide as an IMAP server
+	imap			Run caloxide as an IMAP server
 	import-messages <username> [file]	Import messages
 	export-messages [options...] <username>	Export messages
 	sendmail <username> -- <args...>	sendmail(1) interface
 	serve			Run all servers
-	smtp			Run protoxide as an SMTP server
-	status			View protoxide status
+	smtp			Run caloxide as an SMTP server
+	status			View caloxide status
+	verify			Ask the running server for a one-time link to answer Proton's CAPTCHA
+	push-probe <username>	Connect to Proton's push channel and print what it sends (read-only)
 
 Environment variables:
 	HYDROXIDE_BRIDGE_PASS	Don't prompt for the bridge password, use this variable instead
@@ -398,32 +422,32 @@ func main() {
 	flag.StringVar(&apiEndpoint, "api-endpoint", defaultAPIEndpoint, "ProtonMail API endpoint")
 	flag.StringVar(&appVersion, "app-version", defaultAppVersion, "ProtonMail app version. Proton validates it and rejects unknown forms with error 5002 (external-calendar-<name>@x.y.z is rejected); the default is known to be accepted")
 	// Same variable, rclone's option name (--protondrive-app-version). Go accepts one or
-	// two leading dashes. Whichever is given last wins; PROTOXIDE_PROTONDRIVE_APP_VERSION
+	// two leading dashes. Whichever is given last wins; CALOXIDE_PROTONDRIVE_APP_VERSION
 	// applies only when neither is given.
 	flag.StringVar(&appVersion, "protondrive-app-version", defaultAppVersion, "Alias of -app-version, named like rclone's option; also settable with "+appVersionEnv)
 	flag.StringVar(&userAgent, "user-agent", "", "User-Agent sent to Proton (default: a Firefox-on-Linux string)")
 
-	smtpHost := flag.String("smtp-host", "127.0.0.1", "Allowed SMTP email hostname on which protoxide listens, defaults to 127.0.0.1")
-	smtpPort := flag.String("smtp-port", "1025", "SMTP port on which protoxide listens, defaults to 1025")
-	disableSMTP := flag.Bool("disable-smtp", false, "Disable SMTP for protoxide serve")
+	smtpHost := flag.String("smtp-host", "127.0.0.1", "Allowed SMTP email hostname on which caloxide listens, defaults to 127.0.0.1")
+	smtpPort := flag.String("smtp-port", "1025", "SMTP port on which caloxide listens, defaults to 1025")
+	disableSMTP := flag.Bool("disable-smtp", false, "Disable SMTP for caloxide serve")
 
-	imapHost := flag.String("imap-host", "127.0.0.1", "Allowed IMAP email hostname on which protoxide listens, defaults to 127.0.0.1")
-	imapPort := flag.String("imap-port", "1143", "IMAP port on which protoxide listens, defaults to 1143")
-	disableIMAP := flag.Bool("disable-imap", false, "Disable IMAP for protoxide serve")
+	imapHost := flag.String("imap-host", "127.0.0.1", "Allowed IMAP email hostname on which caloxide listens, defaults to 127.0.0.1")
+	imapPort := flag.String("imap-port", "1143", "IMAP port on which caloxide listens, defaults to 1143")
+	disableIMAP := flag.Bool("disable-imap", false, "Disable IMAP for caloxide serve")
 
-	carddavHost := flag.String("carddav-host", "127.0.0.1", "Allowed CardDAV email hostname on which protoxide listens, defaults to 127.0.0.1")
-	carddavPort := flag.String("carddav-port", "8080", "CardDAV port on which protoxide listens, defaults to 8080")
-	disableCardDAV := flag.Bool("disable-carddav", false, "Disable CardDAV for protoxide serve")
+	carddavHost := flag.String("carddav-host", "127.0.0.1", "Allowed CardDAV email hostname on which caloxide listens, defaults to 127.0.0.1")
+	carddavPort := flag.String("carddav-port", "8080", "CardDAV port on which caloxide listens, defaults to 8080")
+	disableCardDAV := flag.Bool("disable-carddav", false, "Disable CardDAV for caloxide serve")
 
-	caldavHost := flag.String("caldav-host", "127.0.0.1", "Allowed CalDAV email hostname on which protoxide listens, defaults to 127.0.0.1")
-	caldavPort := flag.String("caldav-port", "8081", "CalDAV port on which protoxide listens, defaults to 8081")
-	disableCalDAV := flag.Bool("disable-caldav", false, "Disable CalDAV for protoxide serve")
+	caldavHost := flag.String("caldav-host", "127.0.0.1", "Allowed CalDAV email hostname on which caloxide listens, defaults to 127.0.0.1")
+	caldavPort := flag.String("caldav-port", "8081", "CalDAV port on which caloxide listens, defaults to 8081")
+	disableCalDAV := flag.Bool("disable-caldav", false, "Disable CalDAV for caloxide serve")
 
 	tlsCert := flag.String("tls-cert", "", "Path to the certificate to use for incoming connections")
 	tlsCertKey := flag.String("tls-key", "", "Path to the certificate key to use for incoming connections")
 	tlsClientCA := flag.String("tls-client-ca", "", "If set, clients must provide a certificate signed by the given CA")
 
-	configHome := flag.String("config-home", "", "Path to the directory where protoxide stores its configuration")
+	configHome := flag.String("config-home", "", "Path to the directory where caloxide stores its configuration")
 	flag.StringVar(&proxyURL, "proxy-url", "", "HTTP proxy URL (e.g. socks5://127.0.0.1:1080)")
 	flag.BoolVar(&tor, "tor", false, "If set, connect to ProtonMail over Tor")
 
@@ -446,7 +470,7 @@ func main() {
 			appVersionGiven = true
 		}
 	})
-	av, err := resolveAppVersion(appVersionGiven, appVersion, os.Getenv(appVersionEnv))
+	av, err := resolveAppVersion(appVersionGiven, appVersion, config.Getenv(appVersionEnv))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -476,7 +500,7 @@ func main() {
 		authCmd.Parse(flag.Args()[1:])
 		username := authCmd.Arg(0)
 		if username == "" {
-			log.Fatal("usage: protoxide auth <username>")
+			log.Fatal("usage: caloxide auth <username>")
 		}
 
 		c := newClient()
@@ -606,12 +630,12 @@ func main() {
 		fmt.Println("Bridge password:", bridgePassword)
 		fmt.Println("The password" + map[bool]string{true: ", the 2FA secret", false: ""}[totpSeed != ""] + " and the session are stored in auth.json, encrypted with the bridge password. Keep that safe: it is the only thing protecting them, and the server never stores it.")
 	case "import-session":
-		// Seed protoxide from a session that already exists in a logged-in Proton
+		// Seed caloxide from a session that already exists in a logged-in Proton
 		// web tab, instead of performing a fresh login. Avoids the interactive
 		// login entirely by reusing credentials the browser already holds.
 		username := flag.Arg(1)
 		if username == "" {
-			log.Fatal("usage: protoxide import-session <username>")
+			log.Fatal("usage: caloxide import-session <username>")
 		}
 
 		c := newClient()
@@ -686,12 +710,12 @@ func main() {
 		fmt.Printf("Open this link in a browser within %s (it works once, for one verification):\n\n  %s\n",
 			time.Until(expires).Round(time.Minute), link)
 		if !strings.HasPrefix(link, "http") {
-			fmt.Printf("\n(PROTOXIDE_PUBLIC_URL is not set on the bridge, so put its address in front of %s)\n", webverify.PathPrefix)
+			fmt.Printf("\n(CALOXIDE_PUBLIC_URL is not set on the bridge, so put its address in front of %s)\n", webverify.PathPrefix)
 		}
 	case "push-probe":
 		username := flag.Arg(1)
 		if username == "" {
-			log.Fatal("usage: protoxide push-probe <username>")
+			log.Fatal("usage: caloxide push-probe <username>")
 		}
 		pushProbe(username, newClient)
 	case "status":
@@ -712,7 +736,7 @@ func main() {
 		exportSecretKeysCmd.Parse(flag.Args()[1:])
 		username := exportSecretKeysCmd.Arg(0)
 		if username == "" {
-			log.Fatal("usage: protoxide export-secret-keys <username>")
+			log.Fatal("usage: caloxide export-secret-keys <username>")
 		}
 
 		bridgePassword, err := askBridgePass()
@@ -744,7 +768,7 @@ func main() {
 		username := importMessagesCmd.Arg(0)
 		archivePath := importMessagesCmd.Arg(1)
 		if username == "" {
-			log.Fatal("usage: protoxide import-messages <username> [file]")
+			log.Fatal("usage: caloxide import-messages <username> [file]")
 		}
 
 		f := os.Stdin
@@ -795,7 +819,7 @@ func main() {
 		exportMessagesCmd.Parse(flag.Args()[1:])
 		username := exportMessagesCmd.Arg(0)
 		if (convID == "" && msgID == "") || username == "" {
-			log.Fatal("usage: protoxide export-messages [-conversation-id <id>] [-message-id <id>] <username>")
+			log.Fatal("usage: caloxide export-messages [-conversation-id <id>] [-message-id <id>] <username>")
 		}
 
 		bridgePassword, err := askBridgePass()
@@ -839,14 +863,14 @@ func main() {
 		authManager := auth.NewManager(newClient)
 		// Unattended re-login from the credentials stored in auth.json: exponential
 		// backoff, a cap on logins, and a full stop (with an alert) when Proton demands
-		// a CAPTCHA, which `protoxide verify` then lets a person answer.
+		// a CAPTCHA, which `caloxide verify` then lets a person answer.
 		authManager.EnableRelogin()
 		eventsManager := events.NewManager()
 		verifyHandler := startVerification(authManager)
 		err := listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig, verifyHandler)
 		// Only reached if the server stops. Alert before exiting so a restart
 		// (e.g. by launchd) is visible rather than silent.
-		notify.SendSync("failure", "protoxide: CalDAV server stopped",
+		notify.SendSync("failure", "caloxide: CalDAV server stopped",
 			fmt.Sprintf("The CalDAV server exited: %v", err))
 		log.Fatal(err)
 	case "carddav":
@@ -888,7 +912,7 @@ func main() {
 	case "sendmail":
 		username := flag.Arg(1)
 		if username == "" || flag.Arg(2) != "--" {
-			log.Fatal("usage: protoxide sendmail <username> -- <args...>")
+			log.Fatal("usage: caloxide sendmail <username> -- <args...>")
 		}
 
 		// TODO: other sendmail flags

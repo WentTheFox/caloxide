@@ -14,7 +14,7 @@ func TestResolveAppVersionPrecedence(t *testing.T) {
 		want      string
 	}{
 		{"default when nothing is set", false, defaultAppVersion, "", defaultAppVersion},
-		{"environment applies without a flag", false, defaultAppVersion, "external-drive-protoxide@0.2.1-stable", "external-drive-protoxide@0.2.1-stable"},
+		{"environment applies without a flag", false, defaultAppVersion, "external-drive-caloxide@0.2.1-stable", "external-drive-caloxide@0.2.1-stable"},
 		{"a flag beats the environment", true, "flag-value@1.0.0", "env-value@2.0.0", "flag-value@1.0.0"},
 		{"a flag equal to the default still beats the environment", true, defaultAppVersion, "env-value@2.0.0", defaultAppVersion},
 		{"the flag alone", true, "only-flag@3", "", "only-flag@3"},

@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: ghcr.io/wentthefox/protoxide
+  IMAGE: ghcr.io/wentthefox/caloxide
 
 jobs:
   check-build:
@@ -99,7 +99,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
           labels: |
-            org.opencontainers.image.title=protoxide
+            org.opencontainers.image.title=caloxide
             org.opencontainers.image.description=Proton Calendar CalDAV bridge (hardened fork)
             org.opencontainers.image.licenses=MIT
       - id: build
@@ -159,7 +159,7 @@ jobs:
         run: .github/scripts/build-release.sh "$GITHUB_REF_NAME" dist
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/protoxide_*
+          subject-path: dist/caloxide_*
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

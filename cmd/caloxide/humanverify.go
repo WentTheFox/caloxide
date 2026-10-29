@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -33,7 +34,7 @@ var openBrowser = func(url string) {
 	_ = exec.Command(cmd, args...).Start()
 }
 
-// verificationTimeout is how long `protoxide auth` waits for the person.
+// verificationTimeout is how long `caloxide auth` waits for the person.
 const verificationTimeout = 5 * time.Minute
 
 // solveHumanVerification serves, on a loopback port, the same CAPTCHA page the
@@ -104,7 +105,13 @@ func solveHumanVerification(hv *protonmail.HumanVerificationDetails) (token, tok
 	})
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go srv.Serve(ln)
-	defer srv.Close()
+	// Shutdown, not Close: this function returns as soon as the token is accepted, and
+	// closing at once can cut off the "Token received" page the browser is still waiting for.
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
 
 	url := "http://" + ln.Addr().String() + "/"
 	fmt.Println("\nProton requires you to complete a human-verification challenge.")

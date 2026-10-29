@@ -122,7 +122,7 @@ func newTest() (*reloginer, *fakeClock) {
 	return r, ck
 }
 
-// testSession is a decrypted session record as `protoxide auth` stores it: an expired
+// testSession is a decrypted session record as `caloxide auth` stores it: an expired
 // access token and the account's password. withSeed and withMailbox add the rest.
 func testSession() *CachedAuth {
 	return &CachedAuth{
@@ -180,7 +180,7 @@ func TestTwoPasswordAccountNeedsItsMailboxPassword(t *testing.T) {
 
 	r2, _ := newTest()
 	_, err := authenticate(&fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordTwo, 0, 0)}, testSession(), "me", r2)
-	if err == nil || !strings.Contains(err.Error(), "mailbox password") || !strings.Contains(err.Error(), "protoxide auth") {
+	if err == nil || !strings.Contains(err.Error(), "mailbox password") || !strings.Contains(err.Error(), "caloxide auth") {
 		t.Errorf("want guidance about the missing mailbox password, got %v", err)
 	}
 }
@@ -189,7 +189,7 @@ func TestTwoFactorWithoutSeedOrWithU2F(t *testing.T) {
 	r, _ := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 1, 1)}
 	_, err := authenticate(api, testSession(), "me", r) // no seed stored
-	if err == nil || !strings.Contains(err.Error(), "2FA seed") || !strings.Contains(err.Error(), "protoxide auth") || len(api.totpCodes) != 0 {
+	if err == nil || !strings.Contains(err.Error(), "2FA seed") || !strings.Contains(err.Error(), "caloxide auth") || len(api.totpCodes) != 0 {
 		t.Errorf("no seed: err=%v codes=%v", err, api.totpCodes)
 	}
 
@@ -276,8 +276,8 @@ func TestHumanVerificationIsReportedAndCounted(t *testing.T) {
 	r, _ := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), authErr: &protonmail.APIError{Code: 9001, Message: "captcha"}}
 	_, err := authenticate(api, testSession(), "me", r)
-	if err == nil || !strings.Contains(err.Error(), "human verification") || !strings.Contains(err.Error(), "protoxide auth me") {
-		t.Errorf("want guidance to run protoxide auth, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "human verification") || !strings.Contains(err.Error(), "caloxide auth me") {
+		t.Errorf("want guidance to run caloxide auth, got %v", err)
 	}
 	if len(r.attempts) != 1 {
 		t.Errorf("a human-verification failure still counts as an attempt, got %d", len(r.attempts))
@@ -290,7 +290,7 @@ func TestCaptchaLatchesUntilRestartWithoutContactingProton(t *testing.T) {
 
 	_, err := authenticate(api, testSession(), "me", r)
 	var hv *HumanVerificationError
-	if !errors.As(err, &hv) || !strings.Contains(err.Error(), "protoxide auth me") || !strings.Contains(err.Error(), "protoxide verify") {
+	if !errors.As(err, &hv) || !strings.Contains(err.Error(), "caloxide auth me") || !strings.Contains(err.Error(), "caloxide verify") {
 		t.Fatalf("want guidance to verify or re-auth, got %v", err)
 	}
 	if !errors.As(r.blocked(), &hv) {
@@ -347,8 +347,8 @@ func TestMissingPasswordNeverReachesProtonAndSaysWhatToDo(t *testing.T) {
 	r, _ := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
 	_, err := authenticate(api, withoutPassword(testSession()), "me", r)
-	if err == nil || !strings.Contains(err.Error(), "no password is stored") || !strings.Contains(err.Error(), "protoxide auth") {
-		t.Fatalf("want guidance to run protoxide auth, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no password is stored") || !strings.Contains(err.Error(), "caloxide auth") {
+		t.Fatalf("want guidance to run caloxide auth, got %v", err)
 	}
 	if api.authCalls != 0 || api.infoCalls != 0 || len(r.attempts) != 0 {
 		t.Error("with nothing to log in with, Proton must not be contacted or the breaker charged")

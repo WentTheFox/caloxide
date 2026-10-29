@@ -5,17 +5,17 @@
 //
 // Configuration (environment):
 //
-//	PROTOXIDE_DISCORD_WEBHOOK_URL   A Discord webhook URL. It contains a secret
-//	                                token, so PROTOXIDE_DISCORD_WEBHOOK_URL_FILE
+//	CALOXIDE_DISCORD_WEBHOOK_URL   A Discord webhook URL. It contains a secret
+//	                                token, so CALOXIDE_DISCORD_WEBHOOK_URL_FILE
 //	                                (a path, for Docker secrets) is also accepted.
 //	                                Only https URLs on discord.com with the path
 //	                                /api/webhooks/<id>/<token> are accepted.
 //
-//	PROTOXIDE_APPRISE_URL   Apprise notify endpoint. For a persistent Apprise
+//	CALOXIDE_APPRISE_URL   Apprise notify endpoint. For a persistent Apprise
 //	                        config this is http://<host>:8000/notify/<key>.
-//	PROTOXIDE_APPRISE_URLS  Optional. For Apprise's stateless endpoint
+//	CALOXIDE_APPRISE_URLS  Optional. For Apprise's stateless endpoint
 //	                        (http://<host>:8000/notify), the target URL(s), e.g.
-//	                        "ntfy://<host>/protoxide". Included as "urls" in the body.
+//	                        "ntfy://<host>/caloxide". Included as "urls" in the body.
 package notify
 
 import (
@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mathewcsims/protoxide/config"
 	"io"
 	"log"
 	"net/http"
@@ -51,7 +52,7 @@ var (
 )
 
 const (
-	discordEnv = "PROTOXIDE_DISCORD_WEBHOOK_URL"
+	discordEnv = "CALOXIDE_DISCORD_WEBHOOK_URL"
 	// Discord rejects messages over 2000 characters.
 	discordMaxContent = 1900
 )
@@ -61,11 +62,11 @@ var discordHosts = map[string]bool{
 	"discord.com": true, "canary.discord.com": true, "ptb.discord.com": true, "discordapp.com": true,
 }
 
-func endpoint() string { return os.Getenv("PROTOXIDE_APPRISE_URL") }
+func endpoint() string { return config.Getenv("CALOXIDE_APPRISE_URL") }
 
 // Configured reports whether any alert sink is enabled.
 func Configured() bool {
-	return endpoint() != "" || os.Getenv(discordEnv) != "" || os.Getenv(discordEnv+"_FILE") != ""
+	return endpoint() != "" || config.Getenv(discordEnv) != "" || config.Getenv(discordEnv+"_FILE") != ""
 }
 
 // scrub drops the request URL from a transport error: webhook URLs and Apprise
@@ -104,7 +105,7 @@ func validateDiscordURL(raw string) error {
 // discordURL resolves the webhook from the environment, or from the file named by
 // the _FILE variant. ("", nil) means Discord is not configured.
 func discordURL() (string, error) {
-	direct, file := os.Getenv(discordEnv), os.Getenv(discordEnv+"_FILE")
+	direct, file := config.Getenv(discordEnv), config.Getenv(discordEnv+"_FILE")
 	if direct != "" && file != "" {
 		return "", fmt.Errorf("%s and %s_FILE are both set; use one", discordEnv, discordEnv)
 	}
@@ -198,7 +199,7 @@ func truncate(s string, max int) string {
 
 func postDiscord(hook, typ, title, body string) {
 	payload := map[string]any{
-		"username": "protoxide",
+		"username": "caloxide",
 		"content":  truncate(fmt.Sprintf("**%s%s**\n%s", emojiPrefix(typ), title, body), discordMaxContent),
 		// Alert text can contain arbitrary strings from Proton's API; never let
 		// it ping @everyone, roles or users.
@@ -230,7 +231,7 @@ func postDiscord(hook, typ, title, body string) {
 
 func postApprise(typ, title, body string) {
 	payload := map[string]string{"title": emojiPrefix(typ) + title, "body": body, "type": typ}
-	if urls := os.Getenv("PROTOXIDE_APPRISE_URLS"); urls != "" {
+	if urls := config.Getenv("CALOXIDE_APPRISE_URLS"); urls != "" {
 		payload["urls"] = urls
 	}
 	buf, err := json.Marshal(payload)

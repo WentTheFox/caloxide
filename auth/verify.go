@@ -18,7 +18,7 @@ import (
 // Web verification lets a human answer Proton's CAPTCHA through a page served by the
 // running bridge, without restarting it. It is reachable only inside a verification
 // window, which exists only while a CAPTCHA is pending AND someone with command-line
-// access to the container asked for one (`protoxide verify`). A window is a random
+// access to the container asked for one (`caloxide verify`). A window is a random
 // 256-bit token in the URL, valid for windowTTL, and nothing else about the page is
 // reachable without it.
 

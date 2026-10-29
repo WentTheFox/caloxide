@@ -1,4 +1,4 @@
-# protoxide (WentTheFox fork)
+# caloxide (WentTheFox fork)
 
 Pinned, audited fork of a Proton Calendar CalDAV bridge. It holds a live Proton
 session and calendar plaintext, so the code that runs here is deliberately boring and
@@ -14,7 +14,7 @@ credentials or session storage, read `docs/design/unattended-reauth.md` first.
 - New or bumped module versions must be at least 14 days old. Actions are pinned to
   commit SHAs and Docker bases to digests.
 - Never log, print or commit secrets, tokens, cookies or the bridge password. Do not
-  run `protoxide auth` or handle real Proton credentials.
+  run `caloxide auth` or handle real Proton credentials.
 - Upstream (mathewcsims/protoxide) is never merged automatically.
 - Commit as the repo's configured identity (WentTheFox). No branches unless asked.
   Push and tag only when asked; a `v*.*.*` tag on main publishes an image.

@@ -129,7 +129,7 @@ func main() {
 	// Bridge cable
 	drawBridgeCable(img, gridX+gridWidth+40, gridY+gridHeight/2, gridX-40, gridY+gridHeight/2, accentColors[0])
 	
-	outFile, err := os.Create("protoxide-logo.png")
+	outFile, err := os.Create("caloxide-logo.png")
 	if err != nil {
 		panic(err)
 	}
@@ -139,7 +139,7 @@ func main() {
 		panic(err)
 	}
 	
-	println("Logo generated: protoxide-logo.png")
+	println("Logo generated: caloxide-logo.png")
 }
 
 func drawSmileySun(img *image.RGBA, cx, cy, radius int, c color.Color) {

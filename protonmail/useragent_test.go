@@ -15,25 +15,25 @@ func TestUserAgentAndAppVersionAreSent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{RootURL: srv.URL, HTTPClient: srv.Client(), AppVersion: "external-calendar-protoxide@0.2.0-stable"}
+	c := &Client{RootURL: srv.URL, HTTPClient: srv.Client(), AppVersion: "external-calendar-caloxide@0.2.0-stable"}
 	if _, err := c.GetCurrentUser(); err != nil {
 		t.Fatal(err)
 	}
 	if ua != defaultUserAgent {
 		t.Errorf("default User-Agent changed: %q", ua)
 	}
-	if av != "external-calendar-protoxide@0.2.0-stable" {
+	if av != "external-calendar-caloxide@0.2.0-stable" {
 		t.Errorf("app version = %q", av)
 	}
 
-	c.UserAgent = "protoxide/0.2.0"
+	c.UserAgent = "caloxide/0.2.0"
 	if _, err := c.GetCurrentUser(); err != nil {
 		t.Fatal(err)
 	}
-	if ua != "protoxide/0.2.0" {
+	if ua != "caloxide/0.2.0" {
 		t.Errorf("custom User-Agent not sent: %q", ua)
 	}
-	if d := c.Detached(); d.UserAgent != "protoxide/0.2.0" || d.AppVersion != c.AppVersion {
+	if d := c.Detached(); d.UserAgent != "caloxide/0.2.0" || d.AppVersion != c.AppVersion {
 		t.Errorf("Detached must carry the identification: %+v", d)
 	}
 }

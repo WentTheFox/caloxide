@@ -1,19 +1,19 @@
 # Reviewed baseline: <pattern><TAB><file>. New pairs fail .github/scripts/audit-source.sh.
 # Regenerate with: .github/scripts/audit-source.sh --update-baseline  (then READ the diff).
-binary	protoxide-logo.png
+binary	caloxide-logo.png
 http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	auth/auth.go
-http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	cmd/protoxide/humanverify.go
-http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	cmd/protoxide/main.go
+http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	cmd/caloxide/humanverify.go
+http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	cmd/caloxide/main.go
 http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	notify/notify.go
 http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	protonmail/protonmail.go
-net\.(Dial|DialTimeout|Listen|ListenPacket|LookupHost|LookupIP|LookupAddr|LookupTXT|LookupCNAME)	cmd/protoxide/humanverify.go
+net\.(Dial|DialTimeout|Listen|ListenPacket|LookupHost|LookupIP|LookupAddr|LookupTXT|LookupCNAME)	cmd/caloxide/humanverify.go
 net\.(Dial|DialTimeout|Listen|ListenPacket|LookupHost|LookupIP|LookupAddr|LookupTXT|LookupCNAME)	webverify/control.go
-os/exec|exec\.Command	cmd/protoxide/humanverify.go
-os\.(Getenv|LookupEnv|Environ|Setenv)	cmd/protoxide/main.go
-os\.(Getenv|LookupEnv|Environ|Setenv)	notify/notify.go
+os/exec|exec\.Command	cmd/caloxide/humanverify.go
+os\.(Getenv|LookupEnv|Environ|Setenv)	cmd/caloxide/main.go
+os\.(Getenv|LookupEnv|Environ|Setenv)	config/legacy.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	auth/auth.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	caldav/cache.go
-os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	cmd/protoxide/main.go
+os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	cmd/caloxide/main.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	config/tls.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	notify/notify.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	auth/auth.go

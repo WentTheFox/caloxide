@@ -24,7 +24,7 @@ func sockPath(t *testing.T) string {
 func TestControlRoundTripAndSocketMode(t *testing.T) {
 	path := sockPath(t)
 	exp := time.Now().Add(10 * time.Minute).Round(time.Second)
-	stop, err := ServeControl(path, "https://protoxide.went.local/", func() (string, time.Time, error) { return "TOK123", exp, nil })
+	stop, err := ServeControl(path, "https://caloxide.went.local/", func() (string, time.Time, error) { return "TOK123", exp, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestControlRoundTripAndSocketMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if link != "https://protoxide.went.local/verify/TOK123" {
+	if link != "https://caloxide.went.local/verify/TOK123" {
 		t.Errorf("link = %q", link)
 	}
 	if !expires.Equal(exp) {
@@ -112,12 +112,12 @@ func TestClientWithoutABridge(t *testing.T) {
 }
 
 func TestValidatePublicURL(t *testing.T) {
-	for _, ok := range []string{"", "https://protoxide.went.local", "https://x.example/base", "http://127.0.0.1:8081", "http://localhost"} {
+	for _, ok := range []string{"", "https://caloxide.went.local", "https://x.example/base", "http://127.0.0.1:8081", "http://localhost"} {
 		if err := ValidatePublicURL(ok); err != nil {
 			t.Errorf("%q should be valid: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"http://protoxide.went.local", "ftp://x", "https://user:pw@x.example", "https://x.example/?a=b", "https://x.example/#f", "::::", "https://"} {
+	for _, bad := range []string{"http://caloxide.went.local", "ftp://x", "https://user:pw@x.example", "https://x.example/?a=b", "https://x.example/#f", "::::", "https://"} {
 		if err := ValidatePublicURL(bad); err == nil {
 			t.Errorf("%q should be rejected", bad)
 		}

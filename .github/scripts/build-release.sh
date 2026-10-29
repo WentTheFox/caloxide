@@ -18,11 +18,11 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 wi
   arch=${target#*/}
   ext=""
   [ "$os" = windows ] && ext=".exe"
-  name="protoxide_${version}_${os}_${arch}${ext}"
+  name="caloxide_${version}_${os}_${arch}${ext}"
   echo "building $name"
   CGO_ENABLED=0 GOOS=$os GOARCH=$arch \
-    go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$out/$name" ./cmd/protoxide
+    go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$out/$name" ./cmd/caloxide
 done
 
-(cd "$out" && sha256sum protoxide_* > SHA256SUMS)
+(cd "$out" && sha256sum caloxide_* > SHA256SUMS)
 echo "wrote $out/SHA256SUMS"

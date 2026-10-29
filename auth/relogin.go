@@ -64,21 +64,21 @@ type SuspendedError struct {
 }
 
 func (e *SuspendedError) Error() string {
-	return fmt.Sprintf("unattended re-authentication paused (%s); next attempt not before %s, or run `protoxide auth` and restart the bridge",
+	return fmt.Sprintf("unattended re-authentication paused (%s); next attempt not before %s, or run `caloxide auth` and restart the bridge",
 		e.Reason, e.Until.Format(time.RFC3339))
 }
 
 // HumanVerificationError means Proton demanded a CAPTCHA. That cannot be answered
 // unattended and retrying only looks abusive, so the bridge stops calling Proton
-// until a human runs `protoxide auth` and restarts it.
+// until a human runs `caloxide auth` and restarts it.
 type HumanVerificationError struct{ Username string }
 
 func (e *HumanVerificationError) Error() string {
-	return fmt.Sprintf("Proton wants human verification, which cannot be done unattended; run `protoxide verify` inside the container for a one-time link, or `protoxide auth %s` on a workstation and restart the bridge", e.Username)
+	return fmt.Sprintf("Proton wants human verification, which cannot be done unattended; run `caloxide verify` inside the container for a one-time link, or `caloxide auth %s` on a workstation and restart the bridge", e.Username)
 }
 
 // secrets are the static credentials a login needs. They come from the decrypted
-// session record (auth.json), where `protoxide auth` stored them; nothing else is read.
+// session record (auth.json), where `caloxide auth` stored them; nothing else is read.
 type secrets struct {
 	LoginPassword   string
 	MailboxPassword string
@@ -88,7 +88,7 @@ type secrets struct {
 // credentials reads what a login needs from the decrypted session record.
 func credentials(cached *CachedAuth) (secrets, error) {
 	if cached.LoginPassword == "" {
-		return secrets{}, errors.New("no password is stored; run `protoxide auth` again")
+		return secrets{}, errors.New("no password is stored; run `caloxide auth` again")
 	}
 	return secrets{LoginPassword: cached.LoginPassword, MailboxPassword: cached.MailboxPassword, TOTPSecret: cached.TOTPSecret}, nil
 }
@@ -127,7 +127,7 @@ func newReloginer() *reloginer {
 func syncMailbox(cached *CachedAuth, mode protonmail.PasswordMode) error {
 	if mode == protonmail.PasswordTwo {
 		if cached.MailboxPassword == "" {
-			return errors.New("this is a two-password account but no mailbox password is stored; run `protoxide auth` again")
+			return errors.New("this is a two-password account but no mailbox password is stored; run `caloxide auth` again")
 		}
 		return nil
 	}
@@ -166,7 +166,7 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 		var hv *HumanVerificationError
 		if !errors.As(err, &hv) { // a CAPTCHA was already alerted when it happened
 			log.Printf("auth: %v", err)
-			notify.Send("failure", "relogin-suspended", "protoxide: re-authentication paused",
+			notify.Send("failure", "relogin-suspended", "caloxide: re-authentication paused",
 				fmt.Sprintf("Account %q: %v", username, err))
 		}
 		return nil, err
@@ -209,10 +209,10 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 func (r *reloginer) finishLogin(c protonAPI, cached *CachedAuth, sec secrets, auth *protonmail.Auth, username string) error {
 	if auth.TwoFactor.Enabled != 0 {
 		if auth.TwoFactor.TOTP != 1 {
-			return r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: only TOTP is supported as a 2FA method; run `protoxide auth`"))
+			return r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: only TOTP is supported as a 2FA method; run `caloxide auth`"))
 		}
 		if sec.TOTPSecret == "" {
-			return r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: 2FA is enabled but no 2FA seed is stored; run `protoxide auth` and enter it"))
+			return r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: 2FA is enabled but no 2FA seed is stored; run `caloxide auth` and enter it"))
 		}
 		scope, err := r.answerTOTP(c, sec.TOTPSecret)
 		if err != nil {
@@ -227,7 +227,7 @@ func (r *reloginer) finishLogin(c protonAPI, cached *CachedAuth, sec secrets, au
 
 	r.markSuccess()
 	log.Printf("auth: re-authenticated unattended (2FA answered: %v)", auth.TwoFactor.Enabled != 0)
-	notify.Send("success", "relogin-ok", "protoxide: re-authenticated",
+	notify.Send("success", "relogin-ok", "caloxide: re-authenticated",
 		fmt.Sprintf("Account %q logged in again unattended.", username))
 	return nil
 }
@@ -293,7 +293,7 @@ func (r *reloginer) latchHumanVerification(username string) error {
 	r.humanNeeded = hv
 	r.st.Unlock()
 	log.Printf("auth: unattended re-authentication stopped: %v", hv)
-	notify.Send("failure", "relogin-human", "protoxide: Proton wants a CAPTCHA",
+	notify.Send("failure", "relogin-human", "caloxide: Proton wants a CAPTCHA",
 		fmt.Sprintf("Account %q: %v. The bridge makes no more Proton requests until then.", username, hv))
 	return hv
 }
@@ -308,7 +308,7 @@ func (r *reloginer) fail(username, key string, err error) error {
 	r.nextAttempt = r.now().Add(wait)
 	r.st.Unlock()
 	log.Printf("auth: unattended re-authentication failed: %v (next attempt in %s)", err, wait.Round(time.Second))
-	notify.Send("failure", key, "protoxide: re-authentication failed",
+	notify.Send("failure", key, "caloxide: re-authentication failed",
 		fmt.Sprintf("Account %q: %v", username, err))
 	return err
 }

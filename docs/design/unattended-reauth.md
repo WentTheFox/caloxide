@@ -11,7 +11,7 @@ stranded the client so nothing ever retried while it hammered Proton with dead t
 
 ## What is stored, and where
 
-`protoxide auth` writes one record per account to `auth.json`, **encrypted with the bridge
+`caloxide auth` writes one record per account to `auth.json`, **encrypted with the bridge
 password** (NaCl secretbox, key = the bridge password's 32 random bytes, which only the
 client supplies; the server never stores it):
 
@@ -61,17 +61,17 @@ enabled for the `caldav` server by `Manager.EnableRelogin`.
    hand-over share one client), and `Manager`'s session map is lock-protected.
 
 A record with no stored password, or a 2FA account with no stored seed, fails with an
-instruction to run `protoxide auth`; it does not contact Proton and does not charge the
+instruction to run `caloxide auth`; it does not contact Proton and does not charge the
 login cap.
 
 ## Answering a CAPTCHA: the verification window
 
-1. Someone with command-line access to the container runs `protoxide verify` (for example
-   `docker exec protoxide /protoxide -config-home /data verify`). It talks to the running
+1. Someone with command-line access to the container runs `caloxide verify` (for example
+   `docker exec caloxide /caloxide -config-home /data verify`). It talks to the running
    bridge over a unix socket in the private config directory (mode 0600; only the bridge's
    own user can connect; not a network service).
 2. The bridge opens a **verification window** if, and only if, a CAPTCHA is pending, and
-   prints `<PROTOXIDE_PUBLIC_URL>/verify/<token>`: 256 random bits, memory only, valid
+   prints `<CALOXIDE_PUBLIC_URL>/verify/<token>`: 256 random bits, memory only, valid
    10 minutes, at most 3 login attempts per window.
 3. Every other request, with any other token or none, gets the same plain 404 as an unknown
    path. There is no setting that leaves the page open.
@@ -82,7 +82,7 @@ login cap.
 The page has a strict CSP (per-response nonce, `default-src 'none'`, `frame-ancestors 'none'`),
 `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, every dynamic value escaped, and a
 per-challenge nonce so another site cannot post to it. It follows the browser's colour scheme.
-`protoxide auth` on a workstation serves the same page on a loopback port.
+`caloxide auth` on a workstation serves the same page on a loopback port.
 
 **Why a snippet must be pasted in the popup.** Proton's CAPTCHA reports its result with
 `window.parent.postMessage({type:"pm_captcha", token:"<id>:<response>"}, '*')`, written for an
@@ -99,7 +99,7 @@ logic was verified against a faked DOM, not against Proton's real CAPTCHA.
 ## Findings from the real API
 
 - **Cookies.** Proton sets `Session-Id` (90 days) and `Tag` on the first request; the
-  official Bridge persists them. Protoxide now does too (inside the encrypted record). It did
+  official Bridge persists them. Caloxide now does too (inside the encrypted record). It did
   **not** prevent a CAPTCHA on a fresh login after a revoked session: treat recovery from a
   revoked session as needing a human. Unattended re-login still helps when Proton does not
   challenge it.

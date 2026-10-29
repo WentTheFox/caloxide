@@ -29,7 +29,7 @@ func newVerifyEnv(t *testing.T) *verifyEnv {
 	var key [32]byte
 	key[0] = 7
 	e := &verifyEnv{pw: base64.StdEncoding.EncodeToString(key[:])}
-	stored := withSeed(testSession()) // the record `protoxide auth` wrote: password and 2FA seed
+	stored := withSeed(testSession()) // the record `caloxide auth` wrote: password and 2FA seed
 	if err := EncryptAndSave(stored, "me", &key); err != nil {
 		t.Fatal(err)
 	}

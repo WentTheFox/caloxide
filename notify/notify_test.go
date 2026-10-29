@@ -51,7 +51,7 @@ func newFake(t *testing.T, respond func(*http.Request) (*http.Response, error)) 
 	})
 	log.SetOutput(&f.logs)
 	t.Cleanup(func() { discordClient.Transport = old; log.SetOutput(os.Stderr) })
-	t.Setenv("PROTOXIDE_APPRISE_URL", "")
+	t.Setenv("CALOXIDE_APPRISE_URL", "")
 	t.Setenv(discordEnv, hookURL)
 	t.Setenv(discordEnv+"_FILE", "")
 	return f
@@ -98,7 +98,7 @@ func TestValidateDiscordURL(t *testing.T) {
 
 func TestDiscordPayload(t *testing.T) {
 	f := newFake(t, func(*http.Request) (*http.Response, error) { return reply(204, nil), nil })
-	SendSync("failure", "protoxide: re-authentication failed", "Account \"me\": boom @everyone <@&123>")
+	SendSync("failure", "caloxide: re-authentication failed", "Account \"me\": boom @everyone <@&123>")
 
 	if len(f.requests) != 1 {
 		t.Fatalf("want one request, got %d", len(f.requests))
@@ -208,7 +208,7 @@ func TestWebhookFromFile(t *testing.T) {
 }
 
 func TestConfigured(t *testing.T) {
-	t.Setenv("PROTOXIDE_APPRISE_URL", "")
+	t.Setenv("CALOXIDE_APPRISE_URL", "")
 	t.Setenv(discordEnv, "")
 	t.Setenv(discordEnv+"_FILE", "")
 	if Configured() {

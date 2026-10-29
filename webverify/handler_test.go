@@ -223,6 +223,22 @@ func TestRelayListenerOnlyTrustsThePopupItOpened(t *testing.T) {
 	}
 }
 
+// The popup is closed once the CAPTCHA is solved, by the page that opened it: on the
+// relayed token, and on a pasted pm_captcha line (not the other line the popup logs).
+func TestPopupClosesWhenTheCaptchaIsPassed(t *testing.T) {
+	body := do(Handler(newFake()), "GET", PathPrefix+goodToken, "").Body.String()
+	for _, need := range []string{
+		"function closePopup()",
+		"popup.close()",
+		"this.value.indexOf('pm_captcha') !== -1",
+		"CAPTCHA passed, popup closed",
+	} {
+		if !strings.Contains(body, need) {
+			t.Errorf("page lacks %q", need)
+		}
+	}
+}
+
 func TestPagesFollowTheBrowsersColourScheme(t *testing.T) {
 	f := newFake()
 	pages := map[string]string{
