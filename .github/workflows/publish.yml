@@ -61,6 +61,13 @@ jobs:
           go-version: stable
           check-latest: true
           cache: false
+      - name: Download modules (retry transient proxy errors)
+        run: |
+          for i in 1 2 3; do
+            go mod download && exit 0
+            echo "go mod download failed (attempt $i)"; sleep $((i * 15))
+          done
+          exit 1
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - run: govulncheck ./...
 

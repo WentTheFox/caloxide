@@ -108,9 +108,38 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request, token, cspNonce
 	}
 }
 
-// popupURL is Proton's CAPTCHA page for a challenge token.
+// The functions below let other front ends (the local helper that `protoxide auth`
+// runs on a workstation) serve exactly the same page: one design, one security
+// policy, one dark-mode implementation, one place to fix.
+
+// PageData is what the challenge page needs.
+type PageData struct {
+	// Nonce ties the submitted form to this page; the caller verifies it.
+	Nonce string
+	// PopupURL is the CAPTCHA popup address, from PopupURL.
+	PopupURL string
+}
+
+// PopupURL is Proton's CAPTCHA page for a human-verification challenge token.
+func PopupURL(challengeToken string) string { return popupURL(challengeToken) }
+
+// WriteChallenge writes the challenge page, with the standard security headers. The
+// form posts back to the same URL with fields "nonce" and "input".
+func WriteChallenge(w http.ResponseWriter, d PageData) {
+	csp := setSecurityHeaders(w)
+	render(w, http.StatusOK, pageTmpl, page{CSP: csp, Nonce: d.Nonce, PopupURL: d.PopupURL})
+}
+
+// WriteMessage writes a small status page in the same style.
+func WriteMessage(w http.ResponseWriter, status int, title, body string) {
+	csp := setSecurityHeaders(w)
+	render(w, status, messageTmpl, message{CSP: csp, Title: title, Body: body})
+}
+
+// popupURL is Proton's CAPTCHA page for a challenge token. The page adds &Dark=true
+// itself when the browser reports a dark colour scheme.
 func popupURL(token string) string {
-	return "https://verify-api.proton.me/core/v4/captcha?Token=" + url.QueryEscape(token) + "&ForceWebMessaging=1&Dark=true"
+	return "https://verify-api.proton.me/core/v4/captcha?Token=" + url.QueryEscape(token) + "&ForceWebMessaging=1"
 }
 
 // Why the page cannot simply listen for the result: Proton's CAPTCHA reports with
@@ -135,18 +164,26 @@ func render(w http.ResponseWriter, status int, t *template.Template, data any) {
 	}
 }
 
-const style = `body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;line-height:1.5}
-code,textarea{font-family:ui-monospace,monospace;font-size:.85rem;width:100%;box-sizing:border-box}
-textarea{height:7rem}button{padding:.5rem .9rem;font-size:1rem;margin:.25rem .25rem .25rem 0}
-pre{background:#eee;padding:.6rem;white-space:pre-wrap;word-break:break-all}`
+// style follows the browser's colour scheme (prefers-color-scheme) with no script:
+// colours are variables, the dark palette replaces them under the media query, and
+// color-scheme lets the browser theme the native controls (buttons, scrollbars).
+const style = `:root{color-scheme:light dark;--bg:#fff;--fg:#1a1a1a;--muted:#555;--code-bg:#eee;--field-bg:#fff;--border:#767676}
+@media (prefers-color-scheme:dark){:root{--bg:#121212;--fg:#e6e6e6;--muted:#a6a6a6;--code-bg:#232323;--field-bg:#1c1c1c;--border:#8c8c8c}}
+body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;line-height:1.5;background:var(--bg);color:var(--fg)}
+code,textarea,pre{font-family:ui-monospace,monospace;font-size:.85rem}
+code{background:var(--code-bg);padding:.05rem .3rem;border-radius:3px}
+textarea{width:100%;box-sizing:border-box;height:7rem;background:var(--field-bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:.4rem}
+button{padding:.5rem .9rem;font-size:1rem;margin:.25rem .25rem .25rem 0}
+pre{background:var(--code-bg);padding:.6rem;white-space:pre-wrap;word-break:break-all;border-radius:4px}
+#status{color:var(--muted);min-height:1.5em}`
 
 var messageTmpl = template.Must(template.New("message").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex">
+<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex"><meta name="color-scheme" content="light dark">
 <title>{{.Title}}</title><style nonce="{{.CSP}}">` + style + `</style></head>
 <body><h2>{{.Title}}</h2><p>{{.Body}}</p></body></html>`))
 
 var pageTmpl = template.Must(template.New("page").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex">
+<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex"><meta name="color-scheme" content="light dark">
 <title>Verify with Proton</title><style nonce="{{.CSP}}">` + style + `</style></head>
 <body>
 <h2>Answer Proton's CAPTCHA</h2>
@@ -176,7 +213,9 @@ var snippet = "window.addEventListener('message',function(e){var d=e.data;consol
 document.getElementById('snippet').textContent = snippet;
 
 document.getElementById('open').addEventListener('click', function () {
-  popup = window.open(popupURL, 'hv', 'width=440,height=660');
+  // Ask Proton's CAPTCHA for its dark theme when the browser prefers one.
+  var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  popup = window.open(popupURL + (dark ? '&Dark=true' : ''), 'hv', 'width=440,height=660');
 });
 document.getElementById('copy').addEventListener('click', function () {
   var btn = this;

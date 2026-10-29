@@ -222,3 +222,35 @@ func TestRelayListenerOnlyTrustsThePopupItOpened(t *testing.T) {
 		t.Error("the relay must not broadcast the token to any origin")
 	}
 }
+
+func TestPagesFollowTheBrowsersColourScheme(t *testing.T) {
+	f := newFake()
+	pages := map[string]string{
+		"challenge": do(Handler(f), "GET", PathPrefix+goodToken, "").Body.String(),
+	}
+	f2 := newFake()
+	f2.beginErr = auth.ErrNotWaiting
+	pages["message"] = do(Handler(f2), "GET", PathPrefix+goodToken, "").Body.String()
+
+	for name, body := range pages {
+		for _, need := range []string{
+			`<meta name="color-scheme" content="light dark">`,
+			"color-scheme:light dark",
+			"@media (prefers-color-scheme:dark)",
+			"var(--bg)", "var(--fg)",
+		} {
+			if !strings.Contains(body, need) {
+				t.Errorf("%s page lacks %q", name, need)
+			}
+		}
+	}
+	// Dark mode must not need script (a CSP-blocked script would leave a white page),
+	// and the popup's theme is chosen from the browser, not hard-coded.
+	body := pages["challenge"]
+	if strings.Contains(body, "Dark=true\"") || strings.Contains(popupURL("t"), "Dark=") {
+		t.Error("the popup URL must not hard-code a theme")
+	}
+	if !strings.Contains(body, "matchMedia('(prefers-color-scheme: dark)')") || !strings.Contains(body, "'&Dark=true'") {
+		t.Error("the popup theme must follow the browser's colour scheme")
+	}
+}
