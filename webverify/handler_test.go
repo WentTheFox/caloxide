@@ -138,6 +138,7 @@ func TestSubmitPaths(t *testing.T) {
 	}{
 		{"success", nil, 200, "logged in again"},
 		{"bad paste", auth.ErrNoToken, 400, "Back button"},
+		{"wrong message", auth.ErrWrongMessage, 400, "pm_captcha"},
 		{"expired challenge", auth.ErrChallengeExpired, 400, "Reload this page"},
 		{"rejected by Proton", auth.ErrVerificationRejected, 400, "Reload this page"},
 		{"window gone", auth.ErrNoWindow, 404, "404"},

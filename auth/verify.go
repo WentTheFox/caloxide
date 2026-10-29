@@ -39,6 +39,7 @@ var (
 	ErrNoSecretsBackend     = errors.New("web verification needs the secrets backend (PROTOXIDE_SECRETS_BACKEND)")
 	ErrChallengeExpired     = errors.New("the verification challenge expired or was already used; reload the page")
 	ErrNoToken              = errors.New("could not find a verification token in what was pasted")
+	ErrWrongMessage         = errors.New("that is the proton_captcha line; the token needed is on the line whose type is pm_captcha (the second HV line)")
 	ErrVerificationRejected = errors.New("Proton did not accept that verification; reload the page for a fresh challenge")
 )
 
@@ -281,16 +282,21 @@ func validToken(t string) bool {
 }
 
 // ParseVerificationInput extracts the token from whatever was pasted: the bare
-// token, or the console line the capture snippet prints (`HV {"type":
-// "HUMAN_VERIFICATION_SUCCESS","payload":{"token":"...","type":"captcha"}}`), or just
-// the JSON. The error never contains the input.
+// token, or the console line(s) the capture snippet prints, or just the JSON.
+//
+// Proton's CAPTCHA sends TWO messages, and both are logged: a `proton_captcha` one
+// (64 hex digits, not what the login wants) and the `pm_captcha` one, whose token is
+// "<challenge id>:<CAPTCHA response>". If several lines are pasted at once the
+// pm_captcha token wins wherever it appears; a lone proton_captcha line is refused
+// with an explanation. The error never contains the input.
 func ParseVerificationInput(input string) (string, error) {
 	in := strings.TrimSpace(input)
 	if in == "" || len(in) > maxVerificationInput {
 		return "", ErrNoToken
 	}
-	if i := strings.Index(in, "{"); i >= 0 {
-		var v struct {
+	if strings.Contains(in, "{") {
+		type msg struct {
+			Type    string `json:"type"`
 			Token   string `json:"token"`
 			Payload struct {
 				Token string `json:"token"`
@@ -299,14 +305,40 @@ func ParseVerificationInput(input string) (string, error) {
 				Token string `json:"token"`
 			} `json:"data"`
 		}
-		dec := json.NewDecoder(strings.NewReader(in[i:]))
-		if err := dec.Decode(&v); err != nil {
-			return "", ErrNoToken
-		}
-		for _, t := range []string{v.Payload.Token, v.Token, v.Data.Token} {
-			if t = strings.TrimSpace(t); validToken(t) {
-				return t, nil
+		var pm, other string
+		sawProtonCaptcha := false
+		for i := 0; i < len(in); i++ {
+			if in[i] != '{' {
+				continue
 			}
+			dec := json.NewDecoder(strings.NewReader(in[i:]))
+			var v msg
+			if err := dec.Decode(&v); err != nil {
+				continue
+			}
+			i += int(dec.InputOffset()) - 1 // skip the object just read
+			switch v.Type {
+			case "pm_captcha":
+				if t := strings.TrimSpace(v.Token); pm == "" && validToken(t) {
+					pm = t
+				}
+			case "proton_captcha":
+				sawProtonCaptcha = true
+			default:
+				for _, t := range []string{v.Payload.Token, v.Token, v.Data.Token} {
+					if t = strings.TrimSpace(t); other == "" && validToken(t) {
+						other = t
+					}
+				}
+			}
+		}
+		switch {
+		case pm != "":
+			return pm, nil
+		case other != "":
+			return other, nil
+		case sawProtonCaptcha:
+			return "", ErrWrongMessage
 		}
 		return "", ErrNoToken
 	}

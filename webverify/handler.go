@@ -99,7 +99,7 @@ func (h *handler) submit(w http.ResponseWriter, r *http.Request, token, cspNonce
 		render(w, http.StatusOK, messageTmpl, message{CSP: cspNonce, Title: "Verified", Body: "The bridge is logged in again. You can close this tab; nothing else needs restarting."})
 	case errors.Is(err, auth.ErrNoWindow):
 		http.NotFound(w, r)
-	case errors.Is(err, auth.ErrNoToken):
+	case errors.Is(err, auth.ErrNoToken), errors.Is(err, auth.ErrWrongMessage):
 		render(w, http.StatusBadRequest, messageTmpl, message{CSP: cspNonce, Title: "No token found", Body: err.Error() + ". Use your browser's Back button and paste the whole console line again."})
 	case errors.Is(err, auth.ErrChallengeExpired), errors.Is(err, auth.ErrVerificationRejected):
 		render(w, http.StatusBadRequest, messageTmpl, message{CSP: cspNonce, Title: "Start again", Body: err.Error() + ". Reload this page (the same link) to get a fresh challenge."})
@@ -158,7 +158,8 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!doctype html>
 <button id="copy" type="button">Copy snippet</button>
 <pre id="snippet"></pre></li>
 <li>Solve the CAPTCHA. The token then appears in the box below by itself. If it does not, copy the
-line starting with <code>HV</code> from the popup's console and paste it into the box.</li>
+line starting with <code>HV</code> from the popup's console and paste it into the box. Two such lines appear;
+the one needed has <code>"type":"pm_captcha"</code> (the second). Pasting both is fine, the right one is picked.</li>
 <li>Press Submit:
 <form method="post">
 <input type="hidden" name="nonce" value="{{.Nonce}}">

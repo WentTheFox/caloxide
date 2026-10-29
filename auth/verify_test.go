@@ -306,3 +306,36 @@ func TestParseVerificationInput(t *testing.T) {
 		}
 	}
 }
+
+// Proton's CAPTCHA sends two messages and the console logs both; only pm_captcha is
+// what the login wants. Shapes below are the ones seen on the real CAPTCHA.
+func TestParseVerificationInputPicksThePmCaptchaMessage(t *testing.T) {
+	hex64 := strings.Repeat("ab12cd34", 8)
+	first := `HV {"type":"proton_captcha","token":"` + hex64 + `","protoncaptcha":true} debugger eval code:1:68`
+	second := `HV {"type":"pm_captcha","token":"` + solved + `"} debugger eval code:1:68`
+
+	for name, in := range map[string]string{
+		"both lines":           first + "\n" + second,
+		"both lines, reversed": second + "\n" + first,
+		"both, odd whitespace": "\n\n" + first + "\r\n\r\n" + second + "\n",
+		"only the second":      second,
+		"two on one line":      first + " " + second,
+	} {
+		got, err := ParseVerificationInput(in)
+		if err != nil || got != solved {
+			t.Errorf("%s: got %q, %v; want the pm_captcha token", name, got, err)
+		}
+	}
+
+	if got, err := ParseVerificationInput(first); !errors.Is(err, ErrWrongMessage) || got != "" {
+		t.Errorf("a lone proton_captcha line must be refused with an explanation, got %q, %v", got, err)
+	}
+	if strings.Contains(ErrWrongMessage.Error(), hex64) {
+		t.Error("the error must not echo any token")
+	}
+	// A proton_captcha line alongside a wrapped success message still finds a token.
+	wrapped := `HV {"type":"HUMAN_VERIFICATION_SUCCESS","payload":{"token":"` + solved + `","type":"captcha"}}`
+	if got, err := ParseVerificationInput(first + "\n" + wrapped); err != nil || got != solved {
+		t.Errorf("proton_captcha + wrapped success: got %q, %v", got, err)
+	}
+}
