@@ -1,0 +1,10 @@
+.git
+.github
+.idea
+bin
+*.md
+protoxide-logo.png
+generate_logo.go
+service
+Dockerfile
+.dockerignore
