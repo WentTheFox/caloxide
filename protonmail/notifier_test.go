@@ -227,3 +227,17 @@ func TestNotifierRunStopsOnCancel(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 }
+
+func TestCoreEventParsesCalendarChanges(t *testing.T) {
+	var ev Event
+	raw := `{"EventID":"e","Calendars":[{"ID":"c1","Action":0},{"ID":"c2","Action":1,"Calendar":{"ID":"c2"}}],"CalendarMembers":[{"ID":"m1","Action":0}]}`
+	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(ev.Calendars) != 2 || ev.Calendars[0].ID != "c1" || ev.Calendars[0].Action != EventDelete || ev.Calendars[1].Action != EventCreate {
+		t.Errorf("calendars = %+v", ev.Calendars)
+	}
+	if len(ev.CalendarMembers) != 1 || ev.CalendarMembers[0].Action != EventDelete {
+		t.Errorf("members = %+v", ev.CalendarMembers)
+	}
+}

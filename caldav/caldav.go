@@ -36,6 +36,7 @@ type backend struct {
 
 	caches   map[string]*calendarCache
 	pollers  map[string]bool
+	stops    map[string]chan struct{} // closed to stop a calendar's poller
 	cachesMu sync.Mutex
 
 	push     pushState
@@ -52,8 +53,11 @@ func (b *backend) receiveEvents(events <-chan *protonmail.Event) {
 		if ev == nil {
 			continue
 		}
-		log.Printf("event loop: id=%s refresh=%d messages=%d contacts=%d notices=%d",
-			ev.ID, ev.Refresh, len(ev.Messages), len(ev.Contacts), len(ev.Notices))
+		log.Printf("event loop: id=%s refresh=%d messages=%d contacts=%d calendars=%d members=%d notices=%d",
+			ev.ID, ev.Refresh, len(ev.Messages), len(ev.Contacts), len(ev.Calendars), len(ev.CalendarMembers), len(ev.Notices))
+		if len(ev.Calendars) > 0 || len(ev.CalendarMembers) > 0 {
+			go b.reconcileCalendars()
+		}
 	}
 }
 
@@ -630,6 +634,7 @@ func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username s
 		keyCache:    keyCache,
 		caches:      make(map[string]*calendarCache),
 		pollers:     make(map[string]bool),
+		stops:       make(map[string]chan struct{}),
 	}
 
 	if events != nil {

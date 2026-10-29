@@ -117,6 +117,11 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 	if b.pollers != nil && !b.pollers[calID] {
 		b.pollers[calID] = true
 		wake := b.push.register(calID)
+		stop := make(chan struct{})
+		if b.stops == nil {
+			b.stops = make(map[string]chan struct{})
+		}
+		b.stops[calID] = stop
 		if b.notifier != nil {
 			go func() {
 				if err := b.notifier.Subscribe(protonmail.NotifierLoop{Type: protonmail.NotifierLoopCalendar, Identifier: calID}); err != nil {
@@ -124,7 +129,7 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 				}
 			}()
 		}
-		go b.pollCalendar(calID, wake)
+		go b.pollCalendar(calID, wake, stop)
 	}
 	return cc
 }

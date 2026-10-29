@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/mathewcsims/protoxide/auth"
@@ -53,7 +52,7 @@ func pushProbe(username string, newClient func() *protonmail.Client) {
 	n.Subscribe(loops...)
 
 	fmt.Println("Waiting for pushes. Create or edit an event in Proton Calendar now; Ctrl-C to stop.")
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	n.Run(ctx)
 }

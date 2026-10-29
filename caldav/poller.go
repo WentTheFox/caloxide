@@ -31,7 +31,7 @@ const maxPollBackoff = 10 * time.Minute
 // live. It seeds a cursor at the current head, then polls for changes and patches
 // only the affected events into the cache — avoiding the minutes-long full reload
 // for every inbound change. One poller runs per calendar; see cacheFor.
-func (b *backend) pollCalendar(calID string, wake <-chan struct{}) {
+func (b *backend) pollCalendar(calID string, wake <-chan struct{}, stop <-chan struct{}) {
 	cursor, err := b.c.GetLatestCalendarModelEventID(calID)
 	if err != nil {
 		log.Printf("poller %s: could not seed cursor, delta sync disabled (falling back to periodic reload): %v", calID, err)
@@ -50,12 +50,22 @@ func (b *backend) pollCalendar(calID string, wake <-chan struct{}) {
 		select {
 		case <-timer.C:
 		case <-wake:
+		case <-stop:
+			timer.Stop()
+			log.Printf("poller %s: stopped (calendar removed)", calID)
+			return
 		}
 		timer.Stop()
 		failed := false
 
 		// Drain all currently-available pages before sleeping again.
 		for {
+			select {
+			case <-stop:
+				log.Printf("poller %s: stopped (calendar removed)", calID)
+				return
+			default:
+			}
 			evs, err := b.c.GetCalendarModelEvents(calID, cursor)
 			if err != nil {
 				log.Printf("poller %s: poll failed: %v", calID, err)

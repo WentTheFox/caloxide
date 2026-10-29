@@ -17,6 +17,11 @@ type Event struct {
 	Refresh  EventRefresh
 	Messages []*EventMessage
 	Contacts []*EventContact
+	// Calendars and CalendarMembers report calendars (and the user's membership of
+	// them) being created, updated or deleted. Only the IDs and actions are read:
+	// a deleted member carries no calendar ID, so callers re-list calendars.
+	Calendars       []*EventCalendar
+	CalendarMembers []*EventCalendarMember
 	//ContactEmails
 	//Labels
 	//User
@@ -39,6 +44,16 @@ const (
 	// For messages
 	EventUpdateFlags
 )
+
+type EventCalendar struct {
+	ID     string
+	Action EventAction
+}
+
+type EventCalendarMember struct {
+	ID     string
+	Action EventAction
+}
 
 type EventMessage struct {
 	ID     string

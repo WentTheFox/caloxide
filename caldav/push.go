@@ -49,6 +49,13 @@ func (p *pushState) register(calID string) <-chan struct{} {
 	return ch
 }
 
+// forget drops a calendar's wake channel so a removed calendar is not kept alive.
+func (p *pushState) forget(calID string) {
+	p.mu.Lock()
+	delete(p.wakes, calID)
+	p.mu.Unlock()
+}
+
 func (p *pushState) wake(calID string) {
 	p.mu.Lock()
 	ch := p.wakes[calID]
