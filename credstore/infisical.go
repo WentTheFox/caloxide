@@ -17,6 +17,7 @@ import (
 
 // Names of the secrets read from the configured Infisical folder.
 const (
+	NameUsername        = "PROTON_USERNAME"
 	NameLoginPassword   = "PROTON_LOGIN_PASSWORD"
 	NameMailboxPassword = "PROTON_MAILBOX_PASSWORD"
 	NameTOTPSecret      = "PROTON_TOTP_SECRET"
@@ -105,16 +106,24 @@ func (i *Infisical) Get(ctx context.Context) (Secrets, error) {
 	if err != nil {
 		return Secrets{}, err
 	}
+	// Every secret is optional here: an absent or empty one is simply "". What a
+	// caller requires is its own business (see auth.reloginer). Anything else going
+	// wrong, including a secret the identity may list but not read, is an error.
 	var s Secrets
-	if s.LoginPassword, err = i.secret(ctx, token, NameLoginPassword); err != nil {
-		return Secrets{}, fmt.Errorf("reading %s: %w", NameLoginPassword, err)
-	}
-	// The other two are optional: absent means the account does not use them.
-	if s.MailboxPassword, err = i.secret(ctx, token, NameMailboxPassword); err != nil && !errors.Is(err, ErrNotFound) {
-		return Secrets{}, fmt.Errorf("reading %s: %w", NameMailboxPassword, err)
-	}
-	if s.TOTPSecret, err = i.secret(ctx, token, NameTOTPSecret); err != nil && !errors.Is(err, ErrNotFound) {
-		return Secrets{}, fmt.Errorf("reading %s: %w", NameTOTPSecret, err)
+	for _, f := range []struct {
+		name string
+		dst  *string
+	}{
+		{NameUsername, &s.Username},
+		{NameLoginPassword, &s.LoginPassword},
+		{NameMailboxPassword, &s.MailboxPassword},
+		{NameTOTPSecret, &s.TOTPSecret},
+	} {
+		v, err := i.secret(ctx, token, f.name)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return Secrets{}, fmt.Errorf("reading %s: %w", f.name, err)
+		}
+		*f.dst = v
 	}
 	return s, nil
 }

@@ -311,3 +311,20 @@ func TestErrorsNeverContainSecretValues(t *testing.T) {
 		}
 	}
 }
+
+func TestMissingLoginPasswordIsReportedByName(t *testing.T) {
+	// Optional at the store level, but a re-login and a session start both need it.
+	p := &fakeProvider{sec: credstore.Secrets{TOTPSecret: testSeed}}
+	r, _ := newTest(p)
+	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
+	_, err := authenticate(api, testSession(), "me", r)
+	if err == nil || !strings.Contains(err.Error(), credstore.NameLoginPassword) {
+		t.Errorf("re-login: want an error naming %s, got %v", credstore.NameLoginPassword, err)
+	}
+	if api.authCalls != 0 {
+		t.Error("must not contact Proton without a password")
+	}
+	if err := r.populate(testSession()); err == nil || !strings.Contains(err.Error(), credstore.NameLoginPassword) {
+		t.Errorf("populate: want an error naming %s, got %v", credstore.NameLoginPassword, err)
+	}
+}

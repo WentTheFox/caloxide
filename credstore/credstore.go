@@ -10,10 +10,13 @@ import (
 	"os"
 )
 
-// Secrets are the static credentials needed to log in to Proton again.
-// MailboxPassword is only set for two-password accounts and TOTPSecret only for
-// accounts with 2FA enabled; LoginPassword is always required.
+// Secrets are the static credentials needed to log in to Proton. Every field is
+// optional at the store level (an absent or empty secret comes back as ""); callers
+// decide what they require. Username is only a convenience for `protoxide auth`,
+// MailboxPassword applies to two-password accounts and TOTPSecret to accounts with
+// 2FA enabled.
 type Secrets struct {
+	Username        string
 	LoginPassword   string
 	MailboxPassword string
 	TOTPSecret      string
@@ -28,7 +31,8 @@ func (s Secrets) Describe() string {
 		}
 		return "present"
 	}
-	return fmt.Sprintf("%s: %s\n%s: %s (only needed for two-password accounts)\n%s: %s (only needed for accounts with 2FA)",
+	return fmt.Sprintf("%s: %s (optional; lets `protoxide auth` run without an argument)\n%s: %s\n%s: %s (only needed for two-password accounts)\n%s: %s (only needed for accounts with 2FA)",
+		NameUsername, state(s.Username),
 		NameLoginPassword, state(s.LoginPassword),
 		NameMailboxPassword, state(s.MailboxPassword),
 		NameTOTPSecret, state(s.TOTPSecret))

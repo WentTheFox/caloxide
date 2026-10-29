@@ -73,7 +73,14 @@ func newReloginer(p credstore.Provider) *reloginer {
 func (r *reloginer) fetch() (credstore.Secrets, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), secretsTimeout)
 	defer cancel()
-	return r.provider.Get(ctx)
+	sec, err := r.provider.Get(ctx)
+	if err != nil {
+		return credstore.Secrets{}, err
+	}
+	if sec.LoginPassword == "" {
+		return credstore.Secrets{}, errors.New(credstore.NameLoginPassword + " is not set in the secret store")
+	}
+	return sec, nil
 }
 
 // apply copies the secrets into the in-memory session. The mailbox password is the

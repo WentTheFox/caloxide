@@ -117,7 +117,21 @@ Plain REST with `net/http`, no SDK.
 
 Secret names in that folder (note: the repository's `.gitignore` excludes `secrets*`, which
 is why the package is called `credstore`): `PROTON_LOGIN_PASSWORD`, `PROTON_MAILBOX_PASSWORD`
-(only for two-password accounts), `PROTON_TOTP_SECRET`.
+(only for two-password accounts), `PROTON_TOTP_SECRET`, and `PROTON_USERNAME`.
+
+Every one of them is optional at the store level: a missing or empty secret reads as
+"". What is *required* depends on the caller. A session start and a re-login need
+`PROTON_LOGIN_PASSWORD` (and the mailbox password for a two-password account, and the
+TOTP seed for a 2FA account) and fail with an error naming the missing secret. A secret
+the identity may list but not read is always an error, never treated as missing.
+
+`protoxide auth` and `protoxide import-session` use whatever the store holds and prompt
+only for the rest: the address comes from the argument, else `PROTON_USERNAME`; the
+password, mailbox password and 2FA code come from the store when present (the 2FA code is
+generated from `PROTON_TOTP_SECRET`; if Proton rejects it the command falls back to a
+manual prompt). An unreachable store is fatal rather than a silent fallback to prompting.
+`PROTON_USERNAME` is only a convenience for those two commands. The CalDAV username a
+client sends is unchanged and is still the key into `auth.json`.
 
 ### When the secret store is contacted
 

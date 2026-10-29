@@ -92,6 +92,7 @@ func newClient(t *testing.T, f *fakeInfisical) *Infisical {
 
 func TestGetAllSecretsAndRequestShape(t *testing.T) {
 	f := newFake(t)
+	f.secrets[NameUsername] = "me@example.com"
 	f.secrets[NameLoginPassword] = "pw"
 	f.secrets[NameMailboxPassword] = "mbox"
 	f.secrets[NameTOTPSecret] = "JBSWY3DPEHPK3PXP"
@@ -100,15 +101,15 @@ func TestGetAllSecretsAndRequestShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Secrets{LoginPassword: "pw", MailboxPassword: "mbox", TOTPSecret: "JBSWY3DPEHPK3PXP"}
+	want := Secrets{Username: "me@example.com", LoginPassword: "pw", MailboxPassword: "mbox", TOTPSecret: "JBSWY3DPEHPK3PXP"}
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 	if n := f.logins.Load(); n != 1 {
 		t.Errorf("expected exactly one login per Get, got %d", n)
 	}
-	if len(f.gets) != 3 {
-		t.Fatalf("expected 3 secret reads, got %d", len(f.gets))
+	if len(f.gets) != 4 {
+		t.Fatalf("expected 4 secret reads, got %d", len(f.gets))
 	}
 	q := f.gets[0].URL.Query()
 	for k, v := range map[string]string{
@@ -134,11 +135,16 @@ func TestOptionalSecretsMayBeAbsentOrEmpty(t *testing.T) {
 	}
 }
 
-func TestRequiredSecretMissing(t *testing.T) {
+// Requiring the login password is the caller's job (auth.reloginer); the store
+// reports whatever exists so `protoxide auth` can prompt for just the rest.
+func TestEverySecretIsOptionalAtTheStoreLevel(t *testing.T) {
 	f := newFake(t)
-	_, err := newClient(t, f).Get(context.Background())
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("want ErrNotFound for a missing login password, got %v", err)
+	got, err := newClient(t, f).Get(context.Background())
+	if err != nil {
+		t.Fatalf("an empty folder must not be an error: %v", err)
+	}
+	if got != (Secrets{}) {
+		t.Errorf("want zero Secrets, got %+v", got)
 	}
 }
 
@@ -359,13 +365,13 @@ func TestFromEnvBackendSelection(t *testing.T) {
 }
 
 func TestDescribeNeverPrintsValues(t *testing.T) {
-	out := Secrets{LoginPassword: "hunter2-xq", TOTPSecret: "JBSWY3DPEHPK3PXP"}.Describe()
-	for _, leak := range []string{"hunter2", "xq", "JBSWY3DP", "16", "10"} {
+	out := Secrets{Username: "me@example.com", LoginPassword: "hunter2-xq", TOTPSecret: "JBSWY3DPEHPK3PXP"}.Describe()
+	for _, leak := range []string{"me@example", "hunter2", "xq", "JBSWY3DP", "16", "10"} {
 		if strings.Contains(out, leak) {
 			t.Errorf("Describe leaks %q: %s", leak, out)
 		}
 	}
-	for _, want := range []string{NameLoginPassword + ": present", NameMailboxPassword + ": missing", NameTOTPSecret + ": present"} {
+	for _, want := range []string{NameUsername + ": present", NameLoginPassword + ": present", NameMailboxPassword + ": missing", NameTOTPSecret + ": present"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Describe missing %q in:\n%s", want, out)
 		}

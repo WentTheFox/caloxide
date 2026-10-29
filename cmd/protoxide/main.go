@@ -34,6 +34,7 @@ import (
 	"github.com/mathewcsims/protoxide/imports"
 	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
+	"github.com/mathewcsims/protoxide/totp"
 	smtpbackend "github.com/mathewcsims/protoxide/smtp"
 )
 
@@ -117,6 +118,23 @@ func secretsBackend() credstore.Provider {
 
 // forStorage drops the static passwords from c when they live in an external
 // secret store, so they never reach auth.json.
+// storedSecrets reads whatever the configured secret store holds, or returns the
+// zero value when none is configured. A store that is configured but unreachable
+// is fatal rather than silently falling back to prompting.
+func storedSecrets() credstore.Secrets {
+	p := secretsBackend()
+	if p == nil {
+		return credstore.Secrets{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sec, err := p.Get(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return sec
+}
+
 func forStorage(c *auth.CachedAuth) *auth.CachedAuth {
 	if secretsBackend() != nil {
 		return c.WithoutSecrets()
@@ -415,9 +433,15 @@ func main() {
 	switch cmd {
 	case "auth":
 		authCmd.Parse(flag.Args()[1:])
+		// With a secrets backend, whatever it holds is used and only the rest is
+		// asked for interactively.
+		stored := storedSecrets()
 		username := authCmd.Arg(0)
 		if username == "" {
-			log.Fatal("usage: protoxide auth <username>")
+			username = stored.Username
+		}
+		if username == "" {
+			log.Fatalf("usage: protoxide auth <username> (or set %s in the secret store)", credstore.NameUsername)
 		}
 
 		c := newClient()
@@ -434,7 +458,10 @@ func main() {
 
 		var loginPassword string
 		if a == nil {
-			if pass, err := askPass("Password"); err != nil {
+			if stored.LoginPassword != "" {
+				loginPassword = stored.LoginPassword
+				fmt.Println("Using the login password from the secret store.")
+			} else if pass, err := askPass("Password"); err != nil {
 				log.Fatal(err)
 			} else {
 				loginPassword = string(pass)
@@ -468,22 +495,40 @@ func main() {
 					log.Fatal("Only TOTP is supported as a 2FA method")
 				}
 
-				scanner := bufio.NewScanner(os.Stdin)
-				fmt.Printf("2FA TOTP code: ")
-				scanner.Scan()
-				code := scanner.Text()
-
-				scope, err := c.AuthTOTP(code)
-				if err != nil {
-					log.Fatal(err)
+				answered := false
+				if stored.TOTPSecret != "" {
+					if code, cerr := totp.Code(stored.TOTPSecret, time.Now()); cerr != nil {
+						fmt.Printf("Could not use %s (%v); enter a code manually.\n", credstore.NameTOTPSecret, cerr)
+					} else if scope, aerr := c.AuthTOTP(code); aerr != nil {
+						fmt.Printf("The code generated from the secret store was rejected (%v); enter one manually.\n", aerr)
+					} else {
+						fmt.Println("Answered the 2FA challenge with a code generated from the secret store.")
+						a.Scope = scope
+						answered = true
+					}
 				}
-				a.Scope = scope
+				if !answered {
+					scanner := bufio.NewScanner(os.Stdin)
+					fmt.Printf("2FA TOTP code: ")
+					scanner.Scan()
+					code := scanner.Text()
+
+					scope, err := c.AuthTOTP(code)
+					if err != nil {
+						log.Fatal(err)
+					}
+					a.Scope = scope
+				}
 			}
 		}
 
 		var mailboxPassword string
 		if a.PasswordMode == protonmail.PasswordSingle {
 			mailboxPassword = loginPassword
+		}
+		if mailboxPassword == "" && stored.MailboxPassword != "" {
+			mailboxPassword = stored.MailboxPassword
+			fmt.Println("Using the mailbox password from the secret store.")
 		}
 		if mailboxPassword == "" {
 			prompt := "Password"
@@ -528,9 +573,13 @@ func main() {
 		// Seed protoxide from a session that already exists in a logged-in Proton
 		// web tab, instead of performing a fresh login. Avoids the interactive
 		// login entirely by reusing credentials the browser already holds.
+		stored := storedSecrets()
 		username := flag.Arg(1)
 		if username == "" {
-			log.Fatal("usage: protoxide import-session <username>")
+			username = stored.Username
+		}
+		if username == "" {
+			log.Fatalf("usage: protoxide import-session <username> (or set %s in the secret store)", credstore.NameUsername)
 		}
 
 		c := newClient()
@@ -550,11 +599,20 @@ func main() {
 			log.Fatal("UID and access token are both required")
 		}
 
-		mailboxPass, err := askPass("Mailbox password")
-		if err != nil {
-			log.Fatal(err)
+		// A single-password account's mailbox password is its login password.
+		mailboxPassword := stored.MailboxPassword
+		if mailboxPassword == "" {
+			mailboxPassword = stored.LoginPassword
 		}
-		mailboxPassword := string(mailboxPass)
+		if mailboxPassword != "" {
+			fmt.Println("Using the mailbox password from the secret store.")
+		} else {
+			mailboxPass, err := askPass("Mailbox password")
+			if err != nil {
+				log.Fatal(err)
+			}
+			mailboxPassword = string(mailboxPass)
+		}
 
 		c.SetSession(uid, accessToken)
 
@@ -596,17 +654,10 @@ func main() {
 		// Connectivity/permission check for PROTOXIDE_SECRETS_BACKEND: logs in to the
 		// secret store and reports which secrets exist. Prints names only, no values,
 		// and never contacts Proton.
-		p := secretsBackend()
-		if p == nil {
+		if secretsBackend() == nil {
 			log.Fatalf("set %s=infisical (and the PROTOXIDE_INFISICAL_* variables) first", credstore.BackendEnv)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		sec, err := p.Get(ctx)
-		cancel()
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(sec.Describe())
+		fmt.Println(storedSecrets().Describe())
 	case "status":
 		usernames, err := auth.ListUsernames()
 		if err != nil {
