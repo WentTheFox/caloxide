@@ -100,3 +100,28 @@ is not recommended:
 
 Use a separate `-config-home` so the experiment cannot disturb a working session, and revoke
 its session in Proton afterwards (it shows as "Proton Drive Generic Client").
+
+## Push notifications (not available yet)
+
+Proton's web client has a server-sent-events channel ("Ping-o-matic",
+`GET /event-notifier/v1/events`) that tells a client to fetch its event loop now
+instead of waiting for the next poll. It was added to `ProtonMail/WebClients` on
+2026-09-21 behind the Unleash flag `PingOMatic`, and only the mail app uses it.
+
+As of 2026-10-29 it cannot be used:
+
+- `https://mail.proton.me/api/event-notifier/v1/events` answers `404 Path not
+  found`, the same as an invented path, with and without credentials, while a real
+  route such as `core/v4/users` answers `401`.
+- The flag is absent from the flags the web app receives for the author's account.
+
+`protonmail/notifier.go` and `caldav/push.go` implement the client anyway. It is
+dormant: it asks again every 6 hours, and while it is down the calendar pollers
+run at the usual 30 seconds (with backoff after failures). If Proton enables the
+route, pings wake the matching poller and the safety-net poll relaxes to 5 minutes;
+if the stream drops, polling goes back to 30 seconds at once.
+
+`protoxide push-probe <address>` connects and prints the stream state and every
+ping, which is the way to check whether it has started working. In the browser,
+open DevTools > Network on mail.proton.me, filter `event-notifier`, and look for
+`PingOMatic` in the `feature/v2/frontend` response.

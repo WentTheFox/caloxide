@@ -14,6 +14,7 @@ import (
 	"github.com/emersion/go-ical"
 	"github.com/emersion/go-webdav/caldav"
 	"github.com/mathewcsims/protoxide/config"
+	"github.com/mathewcsims/protoxide/protonmail"
 )
 
 // Proton's calendar events endpoint has no working time-range filter and paginates
@@ -115,7 +116,15 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 	// cache within the poll interval instead of only on a 30-minute full reload.
 	if b.pollers != nil && !b.pollers[calID] {
 		b.pollers[calID] = true
-		go b.pollCalendar(calID)
+		wake := b.push.register(calID)
+		if b.notifier != nil {
+			go func() {
+				if err := b.notifier.Subscribe(protonmail.NotifierLoop{Type: protonmail.NotifierLoopCalendar, Identifier: calID}); err != nil {
+					log.Printf("push: could not add calendar %s yet, it will be sent on reconnect: %v", calID, err)
+				}
+			}()
+		}
+		go b.pollCalendar(calID, wake)
 	}
 	return cc
 }

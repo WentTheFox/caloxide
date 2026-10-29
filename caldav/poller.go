@@ -11,9 +11,15 @@ import (
 )
 
 // calendarPollInterval is how often the calendar event loop is polled for
-// changes. Proton's web client polls on a similar cadence; each idle poll is a
-// single cheap request that just echoes the current cursor.
+// changes while Proton's push channel is not usable. Proton's web client polls on
+// a similar cadence; each idle poll is a single cheap request that just echoes the
+// current cursor.
 const calendarPollInterval = 30 * time.Second
+
+// calendarPushFallbackInterval is the safety-net poll while the push channel is
+// healthy. Pushes are what normally trigger a poll; this only catches a ping that
+// was lost, so it can be slow.
+const calendarPushFallbackInterval = 5 * time.Minute
 
 // maxPollBackoff caps the wait after repeated failures: 30s, 1m, 2m, 4m, 8m, then
 // every ~10 minutes until a poll succeeds again. Retrying a dead session every 30
@@ -25,7 +31,7 @@ const maxPollBackoff = 10 * time.Minute
 // live. It seeds a cursor at the current head, then polls for changes and patches
 // only the affected events into the cache — avoiding the minutes-long full reload
 // for every inbound change. One poller runs per calendar; see cacheFor.
-func (b *backend) pollCalendar(calID string) {
+func (b *backend) pollCalendar(calID string, wake <-chan struct{}) {
 	cursor, err := b.c.GetLatestCalendarModelEventID(calID)
 	if err != nil {
 		log.Printf("poller %s: could not seed cursor, delta sync disabled (falling back to periodic reload): %v", calID, err)
@@ -36,9 +42,16 @@ func (b *backend) pollCalendar(calID string) {
 	log.Printf("poller %s: started, cursor seeded", calID)
 
 	bo := backoff.New(calendarPollInterval, maxPollBackoff)
-	wait := calendarPollInterval
+	wait := b.push.interval()
 	for {
-		time.Sleep(wait)
+		// Sleep until the next scheduled poll or until Proton pushes a ping for this
+		// calendar, whichever comes first.
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-wake:
+		}
+		timer.Stop()
 		failed := false
 
 		// Drain all currently-available pages before sleeping again.
@@ -76,7 +89,7 @@ func (b *backend) pollCalendar(calID string) {
 			log.Printf("poller %s: next attempt in %s", calID, wait.Round(time.Second))
 		} else {
 			bo.Reset()
-			wait = calendarPollInterval
+			wait = b.push.interval()
 		}
 	}
 }

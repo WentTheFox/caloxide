@@ -37,6 +37,9 @@ type backend struct {
 	caches   map[string]*calendarCache
 	pollers  map[string]bool
 	cachesMu sync.Mutex
+
+	push     pushState
+	notifier *protonmail.Notifier
 }
 
 func (b *backend) receiveEvents(events <-chan *protonmail.Event) {
@@ -632,6 +635,7 @@ func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username s
 	if events != nil {
 		go b.receiveEvents(events)
 	}
+	b.startPush()
 
 	return &caldav.Handler{Backend: b}
 }

@@ -688,6 +688,12 @@ func main() {
 		if !strings.HasPrefix(link, "http") {
 			fmt.Printf("\n(PROTOXIDE_PUBLIC_URL is not set on the bridge, so put its address in front of %s)\n", webverify.PathPrefix)
 		}
+	case "push-probe":
+		username := flag.Arg(1)
+		if username == "" {
+			log.Fatal("usage: protoxide push-probe <username>")
+		}
+		pushProbe(username, newClient)
 	case "status":
 		usernames, err := auth.ListUsernames()
 		if err != nil {
