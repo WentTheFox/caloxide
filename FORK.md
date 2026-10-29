@@ -79,9 +79,14 @@ The `X-Pm-Appversion` header defaults to `Other`. It can be set with `-app-versi
 `--protondrive-app-version` (the name of rclone's option; same setting, last one given
 wins), or the `PROTOXIDE_PROTONDRIVE_APP_VERSION` environment variable, which applies only
 when neither flag is given. Letters, digits and `. _ @ + -` only, up to 128 characters.
-Proton validates the value and shows it in the session list: it rejected
-`external-calendar-protoxide@...` (error 5002), and rclone's documented
-`external-drive-<project>@<version>` is the form for Proton **Drive** integrations, so using
-it for this calendar bridge is an informed, unsanctioned choice. Run `protoxide auth` with the
-same value the bridge will use.
+Proton validates the value, shows it in the session list, and **grants the session permissions
+according to it**. Tested 2026-10-29:
 
+| App version | Result |
+|---|---|
+| `Other` (default) | login works, calendar API works |
+| `external-calendar-<name>@x.y.z` | rejected at login: `5002 Invalid app version` |
+| `external-drive-<name>@x.y.z` (rclone's documented form for Proton **Drive** integrations) | login works, even with no CAPTCHA that time, but every calendar endpoint answers `9100 Access token does not have sufficient scope` |
+
+So the Drive form is not usable for this calendar bridge, and there is no known calendar
+equivalent: keep the default. Run `protoxide auth` with the same value the bridge uses.
