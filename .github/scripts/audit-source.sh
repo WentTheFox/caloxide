@@ -9,7 +9,7 @@
 # Checks (tracked files only):
 #   1. every hostname in non-comment Go code is in egress-hosts.txt
 #   2. every (sensitive API, file) pair is in sensitive-api-baseline.txt
-#      (exec, sockets, HTTP clients/servers, env access, file writes, unsafe, cgo...)
+#      (exec, sockets, HTTP clients/servers, env access, file reads/writes, unsafe, cgo...)
 #   3. go.mod has no replace directive other than the known vendored go-webdav
 #   4. no tracked binary files beyond those in the baseline
 #   5. no hidden/bidirectional Unicode (Trojan Source, zero-width, tag characters)
@@ -57,6 +57,7 @@ PATTERNS=(
   '//go:(linkname|embed)'
   'os\.(Getenv|LookupEnv|Environ|Setenv)'
   'os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile'
+  'os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b'
 )
 current=$(mktemp)
 trap 'rm -f "$current"' EXIT

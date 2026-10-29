@@ -1,6 +1,7 @@
 # Design: unattended re-authentication and external secret storage
 
-Status: approved in principle, not implemented. Target: v0.2.0, opt-in, off by default.
+Status: approved. Implemented so far: `totp` (RFC 6238) and `credstore` (Infisical client).
+Not yet wired into `auth/`. Target: v0.2.0, opt-in, off by default.
 
 ## Problem
 
@@ -64,7 +65,7 @@ algorithm is the public RFC.
 
 ### Secret provider
 
-A small interface in a new `secrets` package:
+A small interface in a new `credstore` package:
 
     type Secrets struct { LoginPassword, MailboxPassword, TOTPSecret string }
     type Provider interface { Get(ctx context.Context) (Secrets, error) }
@@ -94,8 +95,13 @@ Plain REST with `net/http`, no SDK.
 - Transport: https required, except `localhost`/`127.0.0.1` for local testing. TLS
   verification stays on. Redirects to a different host are refused. Requests have a
   timeout and a capped response size.
-- The API paths and field names must be checked against the Infisical version that is
-  actually deployed before coding; they have changed between releases.
+- Verified on 2026-10-29 against the OpenAPI spec served by the homelab instance
+  (`infisical/infisical:v0.167.4`): `POST /api/v1/auth/universal-auth/login`
+  (`clientId`, `clientSecret` -> `accessToken`) and
+  `GET /api/v3/secrets/raw/{secretName}` (query `workspaceId`, `environment`,
+  `secretPath`, `type=shared`, `viewSecretValue=true`; response `secret.secretValue`
+  and `secret.secretValueHidden`). Re-check the spec at `/api/docs/json` after an
+  Infisical upgrade.
 - Secret values are never logged, never put in error strings, and never sent to the
   notifier.
 
@@ -109,7 +115,8 @@ Plain REST with `net/http`, no SDK.
     PROTOXIDE_INFISICAL_ENV=prod
     PROTOXIDE_INFISICAL_PATH=/protoxide
 
-Secret names in that folder: `PROTON_LOGIN_PASSWORD`, `PROTON_MAILBOX_PASSWORD`
+Secret names in that folder (note: the repository's `.gitignore` excludes `secrets*`, which
+is why the package is called `credstore`): `PROTON_LOGIN_PASSWORD`, `PROTON_MAILBOX_PASSWORD`
 (only for two-password accounts), `PROTON_TOTP_SECRET`.
 
 ### Safety rails
@@ -163,7 +170,6 @@ Secret names in that folder: `PROTON_LOGIN_PASSWORD`, `PROTON_MAILBOX_PASSWORD`
 
 ## Open questions
 
-- Exact Infisical API paths for the deployed version.
 - Whether Proton rejects TOTP reuse inside a 30 s window (assumed yes; the wait is
   cheap either way).
 - Whether to keep the mailbox password in Infisical for single-password accounts
