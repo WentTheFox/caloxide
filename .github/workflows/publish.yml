@@ -1,8 +1,9 @@
 name: Publish image
 # Pull requests: build only (proves the Dockerfile works). Tags v*.*.*: run the
 # audit guardrails, then publish a multi-arch image to GHCR with an SBOM and a
-# signed build-provenance attestation. Only commits reachable from main can be
-# published.
+# signed build-provenance attestation, and attach attested binaries (amd64 and
+# arm64 for Linux, macOS and Windows) to a GitHub release. Only commits reachable
+# from main can be published.
 on:
   pull_request:
     branches: [ "main" ]
@@ -127,3 +128,46 @@ jobs:
             echo
             echo "Verify provenance: \`gh attestation verify oci://$IMAGE@$DIGEST --repo $GITHUB_REPOSITORY\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Release binaries
+    # After the image, so a release never exists for a tag whose image failed.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the release and upload its files
+      id-token: write      # sign the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          check-latest: true
+          cache: false
+      - name: Download modules (retry transient proxy errors)
+        run: |
+          for i in 1 2 3; do
+            go mod download && exit 0
+            echo "go mod download failed (attempt $i)"; sleep $((i * 15))
+          done
+          exit 1
+      - run: go mod verify
+      - name: Build binaries
+        run: .github/scripts/build-release.sh "$GITHUB_REF_NAME" dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/protoxide_*
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notes="Verify a download: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`, and check it against \`SHA256SUMS\`. The container image is \`$IMAGE\` (pin it by digest, see the run summary)."
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --verify-tag --title "$GITHUB_REF_NAME" --notes "$notes" --generate-notes
+          fi

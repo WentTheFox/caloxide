@@ -34,6 +34,14 @@ uid/gid 65532, has no shell, and carries an SBOM and a signed provenance attesta
 
 Pin the digest, not the tag.
 
+The same tag also creates a GitHub release with static binaries for linux, macOS and
+Windows, each for amd64 and arm64 (`protoxide_<version>_<os>_<arch>`), a `SHA256SUMS`
+file, and a signed provenance attestation per binary (built by
+`.github/scripts/build-release.sh`, run it locally to reproduce). Use one to run
+`protoxide auth` on a workstation:
+
+    gh attestation verify protoxide_v0.3.0_linux_amd64 --repo WentTheFox/protoxide
+
 Runtime notes:
 - Config and the encrypted session live in `/data/protoxide/` (mount a volume owned by 65532:65532).
 - The server speaks **plain HTTP with Basic auth**. The Basic-auth password (the "bridge
