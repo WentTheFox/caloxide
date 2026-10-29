@@ -73,3 +73,15 @@ The page does not exist otherwise: it answers 404 unless a window was opened tha
 a window can only be opened while a CAPTCHA is pending. Alternatively run `protoxide auth`
 on a workstation and restart the bridge. Details: `docs/design/unattended-reauth.md`.
 
+## App version
+
+The `X-Pm-Appversion` header defaults to `Other`. It can be set with `-app-version` or
+`--protondrive-app-version` (the name of rclone's option; same setting, last one given
+wins), or the `PROTOXIDE_PROTONDRIVE_APP_VERSION` environment variable, which applies only
+when neither flag is given. Letters, digits and `. _ @ + -` only, up to 128 characters.
+Proton validates the value and shows it in the session list: it rejected
+`external-calendar-protoxide@...` (error 5002), and rclone's documented
+`external-drive-<project>@<version>` is the form for Proton **Drive** integrations, so using
+it for this calendar bridge is an informed, unsanctioned choice. Run `protoxide auth` with the
+same value the bridge will use.
+

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -107,6 +108,27 @@ func newClient() *protonmail.Client {
 		Debug:      debug,
 		HTTPClient: httpClient,
 	}
+}
+
+// appVersionEnv sets the app version when no flag does. The name mirrors rclone's
+// --protondrive-app-version option.
+const appVersionEnv = "PROTOXIDE_PROTONDRIVE_APP_VERSION"
+
+// appVersionRE is what an app version may contain. It ends up in an HTTP header, so
+// anything outside this set (spaces, control characters, newlines) is refused.
+var appVersionRE = regexp.MustCompile(`^[A-Za-z0-9._@+-]{1,128}$`)
+
+// resolveAppVersion applies the precedence flag > environment > default and validates
+// the result. flagGiven says whether either flag name was passed on the command line.
+func resolveAppVersion(flagGiven bool, flagValue, env string) (string, error) {
+	v := flagValue
+	if !flagGiven && env != "" {
+		v = env
+	}
+	if !appVersionRE.MatchString(v) {
+		return "", fmt.Errorf("invalid app version: use letters, digits and . _ @ + - only, up to 128 characters")
+	}
+	return v, nil
 }
 
 // secretsBackend returns the external secret store selected by
@@ -416,6 +438,10 @@ func main() {
 	flag.BoolVar(&debug, "debug", false, "Enable debug logs")
 	flag.StringVar(&apiEndpoint, "api-endpoint", defaultAPIEndpoint, "ProtonMail API endpoint")
 	flag.StringVar(&appVersion, "app-version", defaultAppVersion, "ProtonMail app version. Proton validates it and rejects unknown forms with error 5002 (external-calendar-<name>@x.y.z is rejected); the default is known to be accepted")
+	// Same variable, rclone's option name (--protondrive-app-version). Go accepts one or
+	// two leading dashes. Whichever is given last wins; PROTOXIDE_PROTONDRIVE_APP_VERSION
+	// applies only when neither is given.
+	flag.StringVar(&appVersion, "protondrive-app-version", defaultAppVersion, "Alias of -app-version, named like rclone's option; also settable with "+appVersionEnv)
 	flag.StringVar(&userAgent, "user-agent", "", "User-Agent sent to Proton (default: a Firefox-on-Linux string)")
 
 	smtpHost := flag.String("smtp-host", "127.0.0.1", "Allowed SMTP email hostname on which protoxide listens, defaults to 127.0.0.1")
@@ -455,6 +481,17 @@ func main() {
 	}
 
 	flag.Parse()
+	appVersionGiven := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "app-version" || f.Name == "protondrive-app-version" {
+			appVersionGiven = true
+		}
+	})
+	av, err := resolveAppVersion(appVersionGiven, appVersion, os.Getenv(appVersionEnv))
+	if err != nil {
+		log.Fatal(err)
+	}
+	appVersion = av
 
 	if tor && proxyURL == "" {
 		log.Fatal("Need -proxy to connect to ProtonMail over Tor")
