@@ -18,5 +18,6 @@ os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	config/tls.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	notify/notify.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	auth/auth.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	caldav/cache.go
+os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	caldav/calendars.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	generate_logo.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	webverify/control.go
