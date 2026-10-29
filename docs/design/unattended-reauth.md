@@ -1,7 +1,7 @@
 # Design: unattended re-authentication and external secret storage
 
-Status: approved. Implemented so far: `totp` (RFC 6238) and `credstore` (Infisical client).
-Not yet wired into `auth/`. Target: v0.2.0, opt-in, off by default.
+Status: implemented (`totp`, `credstore`, and the wiring in `auth/`), opt-in, off by default.
+Ships in v0.2.0. Needs the manual end-to-end test described under Testing.
 
 ## Problem
 
@@ -119,6 +119,34 @@ Secret names in that folder (note: the repository's `.gitignore` excludes `secre
 is why the package is called `credstore`): `PROTON_LOGIN_PASSWORD`, `PROTON_MAILBOX_PASSWORD`
 (only for two-password accounts), `PROTON_TOTP_SECRET`.
 
+### When the secret store is contacted
+
+Because the passwords are no longer in `auth.json`, the process needs them to unlock
+the account's keys, not only to log in again:
+
+1. On the first client request after a start, once the bridge password has decrypted
+   the session: the three secrets are read into memory.
+2. At each re-login, so a rotated password or seed is picked up.
+
+They live in memory for the life of the process, exactly as the cached passwords do
+today, and are never written to disk. The consequence: a running process with a healthy
+session is unaffected by an Infisical outage, but after a restart the first request
+fails until Infisical is reachable (compose start order on one host matters; clients
+retry). Persisting only the derived key passphrase instead would remove that
+dependency; it is left as a possible follow-up.
+
+### Prerequisite fix: re-authentication recursion
+
+Found while implementing this, and fixed for all configurations: with an expired
+access token and a still-valid refresh token, `ReAuth` called `authenticate`, whose
+first step `Unlock` got a 401 and called `ReAuth` again, recursing until the stack
+overflowed (a reproduction hit depth 20 with 21 refresh calls in 30 ms before being
+stopped). Authentication now runs on a detached client that has no `ReAuth`
+(`protonmail.Client.Detached`) and hands the result back (`AdoptSession`). A regression
+test covers it with a fake Proton server. This also removes a failure mode that would
+have made unattended recovery pointless. `Manager` now has a mutex around its session
+map, which was previously unguarded under concurrent requests.
+
 ### Safety rails
 
 - Re-authentication is rate-limited with backoff and a circuit breaker (for example
@@ -127,14 +155,15 @@ is why the package is called `credstore`): `PROTON_LOGIN_PASSWORD`, `PROTON_MAIL
   the bridge stays in the "needs `protoxide auth`" state.
 - Fail closed: if Infisical is unreachable or returns an error, re-authentication
   fails with a clear message; the bridge never falls back to guessing.
-- Infisical is only contacted when a re-login is actually needed. If it is down
-  while the session is healthy, nothing changes.
+- Logins that never reach Proton (secret store unreachable, bad config) do not count
+  toward the breaker; only actual login attempts do. A human-verification challenge
+  (code 9001) cannot be answered unattended and is reported with the exact command to run.
 
 ### Failure modes
 
 | Situation | Behaviour |
 |---|---|
-| Session healthy, Infisical down | Unaffected |
+| Session healthy, Infisical down | Running process unaffected; after a restart the first request fails until Infisical is back |
 | Session expired, Infisical down | Re-auth fails, alert, CalDAV returns 401/503 until fixed |
 | Wrong/rotated password in Infisical | Breaker opens after the attempt limit, alert |
 | Account uses a non-TOTP 2FA method | Interactive `protoxide auth` required (unchanged) |

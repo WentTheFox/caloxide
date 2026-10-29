@@ -25,6 +25,7 @@ import (
 	"github.com/mathewcsims/protoxide/caldav"
 	"github.com/mathewcsims/protoxide/carddav"
 	"github.com/mathewcsims/protoxide/config"
+	"github.com/mathewcsims/protoxide/credstore"
 	"github.com/mathewcsims/protoxide/events"
 	"github.com/mathewcsims/protoxide/exports"
 	imapbackend "github.com/mathewcsims/protoxide/imap"
@@ -100,6 +101,33 @@ func newClient() *protonmail.Client {
 		Debug:      debug,
 		HTTPClient: httpClient,
 	}
+}
+
+// secretsBackend returns the external secret store selected by
+// PROTOXIDE_SECRETS_BACKEND, or nil for the default (secrets stay in auth.json).
+func secretsBackend() credstore.Provider {
+	p, err := credstore.FromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return p
+}
+
+// forStorage drops the static passwords from c when they live in an external
+// secret store, so they never reach auth.json.
+func forStorage(c *auth.CachedAuth) *auth.CachedAuth {
+	if secretsBackend() != nil {
+		return c.WithoutSecrets()
+	}
+	return c
+}
+
+func printSecretsReminder() {
+	if secretsBackend() == nil {
+		return
+	}
+	fmt.Printf("Passwords were NOT saved locally. Make sure the secret store has %s, and %s (two-password accounts) / %s (2FA accounts) if they apply.\n",
+		credstore.NameLoginPassword, credstore.NameMailboxPassword, credstore.NameTOTPSecret)
 }
 
 func askPass(prompt string) ([]byte, error) {
@@ -375,6 +403,13 @@ func main() {
 	}
 
 	cmd := flag.Arg(0)
+	if b := os.Getenv(credstore.BackendEnv); b != "" && b != "local" {
+		switch cmd {
+		case "caldav", "auth", "import-session":
+		default:
+			log.Fatalf("%s=%s is only supported by the caldav, auth and import-session commands", credstore.BackendEnv, b)
+		}
+	}
 	switch cmd {
 	case "auth":
 		authCmd.Parse(flag.Args()[1:])
@@ -475,17 +510,18 @@ func main() {
 			log.Fatal(err)
 		}
 
-		err = auth.EncryptAndSave(&auth.CachedAuth{
+		err = auth.EncryptAndSave(forStorage(&auth.CachedAuth{
 			Auth:            *a,
 			LoginPassword:   loginPassword,
 			MailboxPassword: mailboxPassword,
 			KeySalts:        keySalts,
-		}, username, secretKey)
+		}), username, secretKey)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		fmt.Println("Bridge password:", bridgePassword)
+		printSecretsReminder()
 	case "import-session":
 		// Seed protoxide from a session that already exists in a logged-in Proton
 		// web tab, instead of performing a fresh login. Avoids the interactive
@@ -541,15 +577,16 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if err := auth.EncryptAndSave(&auth.CachedAuth{
+		if err := auth.EncryptAndSave(forStorage(&auth.CachedAuth{
 			Auth:            *a,
 			MailboxPassword: mailboxPassword,
 			KeySalts:        keySalts,
-		}, username, secretKey); err != nil {
+		}), username, secretKey); err != nil {
 			log.Fatal(err)
 		}
 
 		fmt.Println("Session imported. Bridge password:", bridgePassword)
+		printSecretsReminder()
 		if refreshToken == "" {
 			fmt.Println("Note: no refresh token provided — the session will stop working when the access token expires, and you'll need to import again.")
 		}
@@ -696,6 +733,10 @@ func main() {
 		addr := *caldavHost + ":" + *caldavPort
 		caldav.Debug = debug
 		authManager := auth.NewManager(newClient)
+		if p := secretsBackend(); p != nil {
+			authManager.UseSecrets(p)
+			log.Printf("secrets: static Proton credentials come from %s, not auth.json", os.Getenv(credstore.BackendEnv))
+		}
 		eventsManager := events.NewManager()
 		err := listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig)
 		// Only reached if the server stops. Alert before exiting so a restart

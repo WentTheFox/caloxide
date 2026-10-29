@@ -90,6 +90,20 @@ type Client struct {
 	hvType  string
 }
 
+// Detached returns a client for the same API that never calls ReAuth. The
+// re-authentication flow must use it: that flow makes authenticated calls of its
+// own (Unlock), and on a 401 they would otherwise call ReAuth again from inside
+// ReAuth, recursing until the stack overflows (or deadlocking on a lock).
+func (c *Client) Detached() *Client {
+	return &Client{RootURL: c.RootURL, AppVersion: c.AppVersion, Debug: c.Debug, HTTPClient: c.HTTPClient}
+}
+
+// AdoptSession takes over the authenticated session and unlocked keys of d, a
+// client obtained from Detached that has finished authenticating.
+func (c *Client) AdoptSession(d *Client) {
+	c.uid, c.accessToken, c.keyRing = d.uid, d.accessToken, d.keyRing
+}
+
 // SetSession seeds the client with an existing authenticated session (a UID and
 // access token obtained elsewhere), so API calls can be made without performing
 // a fresh login. Used by the session-import path.

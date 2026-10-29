@@ -9,12 +9,14 @@ http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|Li
 net\.(Dial|DialTimeout|Listen|ListenPacket|LookupHost|LookupIP|LookupAddr|LookupTXT|LookupCNAME)	cmd/protoxide/humanverify.go
 os/exec|exec\.Command	cmd/protoxide/humanverify.go
 os\.(Getenv|LookupEnv|Environ|Setenv)	cmd/protoxide/main.go
+os\.(Getenv|LookupEnv|Environ|Setenv)	credstore/credstore.go
 os\.(Getenv|LookupEnv|Environ|Setenv)	credstore/infisical.go
 os\.(Getenv|LookupEnv|Environ|Setenv)	notify/notify.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	auth/auth.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	caldav/cache.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	cmd/protoxide/main.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	config/tls.go
+os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	credstore/credstore.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	credstore/infisical.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	auth/auth.go
 os\.(WriteFile|OpenFile|Create|Remove|RemoveAll|Rename|Chmod|Symlink)|ioutil\.WriteFile	caldav/cache.go

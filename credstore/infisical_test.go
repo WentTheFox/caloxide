@@ -320,3 +320,40 @@ func TestFromEnv(t *testing.T) {
 		t.Error("an unreadable _FILE must be an error")
 	}
 }
+
+func TestFromEnvBackendSelection(t *testing.T) {
+	readFile := func(string) ([]byte, error) { return nil, errors.New("unused") }
+	base := map[string]string{
+		"PROTOXIDE_INFISICAL_URL": "https://infisical.example.lan", "PROTOXIDE_INFISICAL_CLIENT_ID": "id",
+		"PROTOXIDE_INFISICAL_CLIENT_SECRET": "s", "PROTOXIDE_INFISICAL_PROJECT_ID": "p", "PROTOXIDE_INFISICAL_ENV": "prod",
+	}
+	with := func(backend string) func(string) string {
+		return func(k string) string {
+			if k == BackendEnv {
+				return backend
+			}
+			return base[k]
+		}
+	}
+	for _, b := range []string{"", "local"} {
+		p, err := fromEnv(with(b), readFile)
+		if err != nil || p != nil {
+			t.Errorf("backend %q: got (%v, %v), want (nil, nil)", b, p, err)
+		}
+	}
+	p, err := fromEnv(with("infisical"), readFile)
+	if err != nil || p == nil {
+		t.Errorf("infisical: got (%v, %v)", p, err)
+	}
+	if _, err := fromEnv(with("vault"), readFile); err == nil {
+		t.Error("an unknown backend must be an error, not a silent fallback to local")
+	}
+	if _, err := fromEnv(func(k string) string {
+		if k == BackendEnv {
+			return "infisical"
+		}
+		return ""
+	}, readFile); err == nil {
+		t.Error("infisical without its settings must be an error")
+	}
+}

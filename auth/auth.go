@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/nacl/secretbox"
 
 	"github.com/mathewcsims/protoxide/config"
+	"github.com/mathewcsims/protoxide/credstore"
 	"github.com/mathewcsims/protoxide/protonmail"
 )
 
@@ -27,6 +29,17 @@ type CachedAuth struct {
 	MailboxPassword string
 	KeySalts        map[string][]byte
 	// TODO: add padding
+}
+
+// WithoutSecrets returns a copy without the static passwords, for storage when
+// they live in an external secret store instead (see docs/design/unattended-reauth.md).
+// The session tokens and key salts, which rotate and are not reusable credentials
+// on their own, are kept.
+func (c *CachedAuth) WithoutSecrets() *CachedAuth {
+	cp := *c
+	cp.LoginPassword = ""
+	cp.MailboxPassword = ""
+	return &cp
 }
 
 func readCachedAuths() (map[string]string, error) {
@@ -122,7 +135,10 @@ func EncryptAndSave(auth *CachedAuth, username string, secretKey *[32]byte) erro
 	return saveAuths(auths)
 }
 
-func authenticate(c *protonmail.Client, cachedAuth *CachedAuth, username string) (openpgp.EntityList, error) {
+// authenticate unlocks the session, refreshing or re-establishing it as needed.
+// rl is nil unless a secrets backend is configured; without it a dead refresh token
+// is handled with the cached password exactly as before (and 2FA needs a human).
+func authenticate(c protonAPI, cachedAuth *CachedAuth, username string, rl *reloginer) (openpgp.EntityList, error) {
 	// Use the stored access token directly first. Refreshing prematurely discards
 	// a still-valid token, and Proton's refresh endpoint is currently unreliable
 	// for third-party sessions; the client's own 401 handler will refresh only
@@ -135,20 +151,29 @@ func authenticate(c *protonmail.Client, cachedAuth *CachedAuth, username string)
 	}
 
 	auth, err := c.AuthRefresh(&cachedAuth.Auth)
-	if apiErr, ok := err.(*protonmail.APIError); ok && apiErr.Code == 10013 {
+	if apiErr, ok := err.(*protonmail.APIError); ok && apiErr.Code == apiCodeInvalidRefreshToken {
 		// Invalid refresh token, re-authenticate
-		authInfo, err := c.AuthInfo(username)
-		if err != nil {
-			return nil, fmt.Errorf("cannot re-authenticate: failed to get auth info: %v", err)
-		}
+		if rl != nil {
+			if auth, err = rl.reauth(c, cachedAuth, username); err != nil {
+				return nil, err
+			}
+		} else {
+			if cachedAuth.LoginPassword == "" {
+				return nil, fmt.Errorf("cannot re-authenticate: no password is stored; run `protoxide auth %s`", username)
+			}
+			authInfo, err := c.AuthInfo(username)
+			if err != nil {
+				return nil, fmt.Errorf("cannot re-authenticate: failed to get auth info: %v", err)
+			}
 
-		auth, err = c.Auth(username, cachedAuth.LoginPassword, authInfo)
-		if err != nil {
-			return nil, fmt.Errorf("cannot re-authenticate: %v", err)
-		}
+			auth, err = c.Auth(username, cachedAuth.LoginPassword, authInfo)
+			if err != nil {
+				return nil, fmt.Errorf("cannot re-authenticate: %v", err)
+			}
 
-		if auth.TwoFactor.Enabled != 0 {
-			return nil, fmt.Errorf("cannot re-authenticate: two factor authentication enabled, please login again manually")
+			if auth.TwoFactor.Enabled != 0 {
+				return nil, fmt.Errorf("cannot re-authenticate: two factor authentication enabled, please login again manually")
+			}
 		}
 	} else if err != nil {
 		return nil, err
@@ -156,6 +181,20 @@ func authenticate(c *protonmail.Client, cachedAuth *CachedAuth, username string)
 	cachedAuth.Auth = *auth
 
 	return c.Unlock(auth, cachedAuth.KeySalts, cachedAuth.MailboxPassword)
+}
+
+// reauthenticate runs authenticate on a detached client (one with no ReAuth of its
+// own) and, on success, hands the session and unlocked keys to c. Running it on c
+// directly recursed forever when the stored access token had expired: Unlock got a
+// 401, which called ReAuth, which called authenticate, which called Unlock again.
+func reauthenticate(c *protonmail.Client, cached *CachedAuth, username string, rl *reloginer) (openpgp.EntityList, error) {
+	d := c.Detached()
+	keys, err := authenticate(d, cached, username, rl)
+	if err != nil {
+		return nil, err
+	}
+	c.AdoptSession(d)
+	return keys, nil
 }
 
 func ListUsernames() ([]string, error) {
@@ -190,10 +229,34 @@ var ErrUnauthorized = errors.New("invalid username or password")
 
 type Manager struct {
 	newClient func() *protonmail.Client
+	mu        sync.Mutex // guards sessions, and serialises first-time session setup
 	sessions  map[string]*session
+
+	// rl is non-nil only when a secrets backend is configured (UseSecrets).
+	rl *reloginer
+}
+
+// UseSecrets keeps the static Proton passwords (and the TOTP seed) in an external
+// secret store instead of auth.json: they are read into memory when a session is
+// established and when a re-login is needed, and never written to disk. It also
+// enables unattended re-login for TOTP accounts. Call before the first Auth.
+func (m *Manager) UseSecrets(p credstore.Provider) {
+	m.rl = newReloginer(p)
+}
+
+// save persists the session, leaving the static passwords out when they live in
+// an external secret store.
+func (m *Manager) save(c *CachedAuth, username string, key *[32]byte) error {
+	if m.rl != nil {
+		c = c.WithoutSecrets()
+	}
+	return EncryptAndSave(c, username, key)
 }
 
 func (m *Manager) Auth(username, password string) (*protonmail.Client, openpgp.EntityList, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	var secretKey [32]byte
 	passwordBytes, err := base64.StdEncoding.DecodeString(password)
 	if err != nil || len(passwordBytes) != len(secretKey) {
@@ -227,22 +290,37 @@ func (m *Manager) Auth(username, password string) (*protonmail.Client, openpgp.E
 		if err := json.Unmarshal(decrypted, &cachedAuth); err != nil {
 			return nil, nil, err
 		}
-
-		c := m.newClient()
-		c.ReAuth = func() error {
-			if _, err := authenticate(c, &cachedAuth, username); err != nil {
-				return err
+		if m.rl != nil {
+			// The passwords are not in auth.json; load them for this session.
+			if err := m.rl.populate(&cachedAuth); err != nil {
+				return nil, nil, err
 			}
-			return EncryptAndSave(&cachedAuth, username, &secretKey)
 		}
 
-		// authenticate updates cachedAuth with the new refresh token
-		privateKeys, err := authenticate(c, &cachedAuth, username)
+		c := m.newClient()
+		reauth := func() (openpgp.EntityList, error) {
+			return reauthenticate(c, &cachedAuth, username, m.rl)
+		}
+		// ReAuth runs on a 401 from any goroutine using this client (requests, the
+		// event poller); serialise it, since it rewrites cachedAuth.
+		var reauthMu sync.Mutex
+		c.ReAuth = func() error {
+			reauthMu.Lock()
+			defer reauthMu.Unlock()
+			if _, err := reauth(); err != nil {
+				return err
+			}
+			return m.save(&cachedAuth, username, &secretKey)
+		}
+
+		// reauth updates cachedAuth with the new refresh token. c is not shared
+		// with other goroutines yet, so no lock is needed here.
+		privateKeys, err := reauth()
 		if err != nil {
 			return nil, nil, err
 		}
 
-		if err := EncryptAndSave(&cachedAuth, username, &secretKey); err != nil {
+		if err := m.save(&cachedAuth, username, &secretKey); err != nil {
 			return nil, nil, err
 		}
 
