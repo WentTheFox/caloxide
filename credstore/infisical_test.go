@@ -359,8 +359,8 @@ func TestFromEnvBackendSelection(t *testing.T) {
 }
 
 func TestDescribeNeverPrintsValues(t *testing.T) {
-	out := Secrets{LoginPassword: "hunter2-LOGIN", TOTPSecret: "JBSWY3DPEHPK3PXP"}.Describe()
-	for _, leak := range []string{"hunter2", "LOGIN", "JBSWY3DP", "16", "12"} {
+	out := Secrets{LoginPassword: "hunter2-xq", TOTPSecret: "JBSWY3DPEHPK3PXP"}.Describe()
+	for _, leak := range []string{"hunter2", "xq", "JBSWY3DP", "16", "10"} {
 		if strings.Contains(out, leak) {
 			t.Errorf("Describe leaks %q: %s", leak, out)
 		}
