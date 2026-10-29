@@ -19,6 +19,21 @@ type Secrets struct {
 	TOTPSecret      string
 }
 
+// Describe reports which secrets are set, by name. It never includes a value or a
+// length, so its output is safe to print or paste.
+func (s Secrets) Describe() string {
+	state := func(v string) string {
+		if v == "" {
+			return "missing"
+		}
+		return "present"
+	}
+	return fmt.Sprintf("%s: %s\n%s: %s (only needed for two-password accounts)\n%s: %s (only needed for accounts with 2FA)",
+		NameLoginPassword, state(s.LoginPassword),
+		NameMailboxPassword, state(s.MailboxPassword),
+		NameTOTPSecret, state(s.TOTPSecret))
+}
+
 // Provider returns the current secrets. Implementations must not log secret
 // values or include them in errors.
 type Provider interface {

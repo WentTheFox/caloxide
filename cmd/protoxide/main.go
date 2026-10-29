@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
@@ -405,9 +407,9 @@ func main() {
 	cmd := flag.Arg(0)
 	if b := os.Getenv(credstore.BackendEnv); b != "" && b != "local" {
 		switch cmd {
-		case "caldav", "auth", "import-session":
+		case "caldav", "auth", "import-session", "check-secrets":
 		default:
-			log.Fatalf("%s=%s is only supported by the caldav, auth and import-session commands", credstore.BackendEnv, b)
+			log.Fatalf("%s=%s is only supported by the caldav, auth, import-session and check-secrets commands", credstore.BackendEnv, b)
 		}
 	}
 	switch cmd {
@@ -590,6 +592,21 @@ func main() {
 		if refreshToken == "" {
 			fmt.Println("Note: no refresh token provided — the session will stop working when the access token expires, and you'll need to import again.")
 		}
+	case "check-secrets":
+		// Connectivity/permission check for PROTOXIDE_SECRETS_BACKEND: logs in to the
+		// secret store and reports which secrets exist. Prints names only, no values,
+		// and never contacts Proton.
+		p := secretsBackend()
+		if p == nil {
+			log.Fatalf("set %s=infisical (and the PROTOXIDE_INFISICAL_* variables) first", credstore.BackendEnv)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		sec, err := p.Get(ctx)
+		cancel()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(sec.Describe())
 	case "status":
 		usernames, err := auth.ListUsernames()
 		if err != nil {

@@ -357,3 +357,17 @@ func TestFromEnvBackendSelection(t *testing.T) {
 		t.Error("infisical without its settings must be an error")
 	}
 }
+
+func TestDescribeNeverPrintsValues(t *testing.T) {
+	out := Secrets{LoginPassword: "hunter2-LOGIN", TOTPSecret: "JBSWY3DPEHPK3PXP"}.Describe()
+	for _, leak := range []string{"hunter2", "LOGIN", "JBSWY3DP", "16", "12"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("Describe leaks %q: %s", leak, out)
+		}
+	}
+	for _, want := range []string{NameLoginPassword + ": present", NameMailboxPassword + ": missing", NameTOTPSecret + ": present"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Describe missing %q in:\n%s", want, out)
+		}
+	}
+}
