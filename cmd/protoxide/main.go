@@ -366,7 +366,7 @@ Environment variables:
 func main() {
 	flag.BoolVar(&debug, "debug", false, "Enable debug logs")
 	flag.StringVar(&apiEndpoint, "api-endpoint", defaultAPIEndpoint, "ProtonMail API endpoint")
-	flag.StringVar(&appVersion, "app-version", defaultAppVersion, "ProtonMail app version, e.g. external-calendar-protoxide@0.2.0-stable")
+	flag.StringVar(&appVersion, "app-version", defaultAppVersion, "ProtonMail app version. Proton validates it and rejects unknown forms with error 5002 (external-calendar-<name>@x.y.z is rejected); the default is known to be accepted")
 	flag.StringVar(&userAgent, "user-agent", "", "User-Agent sent to Proton (default: a Firefox-on-Linux string)")
 
 	smtpHost := flag.String("smtp-host", "127.0.0.1", "Allowed SMTP email hostname on which protoxide listens, defaults to 127.0.0.1")
