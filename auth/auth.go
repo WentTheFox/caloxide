@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -46,6 +47,10 @@ func attachCookieJar(c *protonmail.Client, saved []byte, allow func(host string)
 	jar := cookiestore.New(allow)
 	if err := jar.Import(saved); err != nil {
 		log.Printf("cookies: ignoring unreadable saved cookies: %v", err)
+	} else if names := jar.Names(); len(names) > 0 {
+		log.Printf("cookies: restored saved Proton cookies: %s", strings.Join(names, ", "))
+	} else {
+		log.Printf("cookies: none saved yet; Proton will see a brand-new client until the next login stores them")
 	}
 	hc := http.Client{}
 	if c.HTTPClient != nil {
@@ -170,6 +175,13 @@ func EncryptAndSave(auth *CachedAuth, username string, secretKey *[32]byte) erro
 // rl is nil unless a secrets backend is configured; without it a dead refresh token
 // is handled with the cached password exactly as before (and 2FA needs a human).
 func authenticate(c protonAPI, cachedAuth *CachedAuth, username string, rl *reloginer) (openpgp.EntityList, error) {
+	// While unattended re-login is paused (CAPTCHA pending, backing off, cap reached)
+	// do not touch Proton at all, not even the refresh endpoint.
+	if rl != nil {
+		if err := rl.blocked(); err != nil {
+			return nil, err
+		}
+	}
 	// Use the stored access token directly first. Refreshing prematurely discards
 	// a still-valid token, and Proton's refresh endpoint is currently unreliable
 	// for third-party sessions; the client's own 401 handler will refresh only
@@ -340,6 +352,11 @@ func (m *Manager) Auth(username, password string) (*protonmail.Client, openpgp.E
 		}
 
 		c := m.newClient()
+		if m.rl != nil {
+			// Authenticated requests fail locally while re-login is paused, instead of
+			// hammering Proton with a dead token (see reloginer.blocked).
+			c.Gate = m.rl.blocked
+		}
 		jar := attachCookieJar(c, cachedAuth.Cookies, cookiestore.ProtonHosts)
 		// persist stores the session together with the current cookies.
 		persist := func() error { return m.persistSession(&cachedAuth, jar, username, &secretKey) }

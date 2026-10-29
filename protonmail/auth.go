@@ -144,8 +144,7 @@ func (c *Client) Auth(username, password string, info *AuthInfo) (*Auth, error) 
 	}
 
 	auth := respData.auth()
-	c.uid = auth.UID
-	c.accessToken = auth.AccessToken
+	c.setCredentials(auth.UID, auth.AccessToken)
 	return auth, nil
 }
 
@@ -329,8 +328,7 @@ func unlockKeyRing(keys []*PrivateKey, userKeyRing openpgp.EntityList, keySalts 
 }
 
 func (c *Client) Unlock(auth *Auth, keySalts map[string][]byte, passphrase string) (openpgp.EntityList, error) {
-	c.uid = auth.UID
-	c.accessToken = auth.AccessToken
+	c.setCredentials(auth.UID, auth.AccessToken)
 
 	u, err := c.GetCurrentUser()
 	if err != nil {
@@ -377,8 +375,7 @@ func (c *Client) Logout() error {
 		return err
 	}
 
-	c.uid = ""
-	c.accessToken = ""
+	c.setCredentials("", "")
 	c.keyRing = nil
 	return nil
 }

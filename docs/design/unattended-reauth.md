@@ -177,10 +177,30 @@ start, shares it with the detached authentication client, and stores them inside
 already-encrypted session record. `protoxide auth` saves the cookies of the login it
 performed, so the unattended re-logins that follow present the same `Session-Id`.
 
-Whether this removes the CAPTCHA for re-logins can only be learned from the real
-account. If Proton still challenges them, unattended recovery after a *revoked* session
-is not possible; it still helps when the refresh token merely expired, and the bridge
-reports the challenge with the exact command to run.
+**Result (2026-10-29, revoked session, cookies stored by the preceding login):** Proton
+still answered the fresh login with a CAPTCHA (9001). Either the cookies do not lower the
+risk for a revoked session, or they were not effective (the revoked session's `Session-Id`
+may be invalidated with it); the bridge now logs which cookie *names* it restored so the
+next test can tell. Treat **recovery after a revoked session as impossible without a
+human**. Unattended re-login can still help when Proton does not challenge it.
+
+The same test exposed a worse problem: after the failed re-login the client was left
+with no token, so nothing ever retried, while the event loop and six calendar pollers kept
+sending seven doomed requests every 30 seconds. Fixed as follows.
+
+- **CAPTCHA is a latched state.** Once Proton demands one, the bridge sends one alert and
+  makes **no further Proton requests** until a human runs `protoxide auth` and the bridge
+  is restarted.
+- **A gate on the client.** While re-login is paused (CAPTCHA pending, backing off, or the
+  per-window cap reached) every request that carries a token fails locally, with no
+  network traffic; anonymous login requests are never gated.
+- **Exponential backoff.** Failures delay the next unattended attempt 30s, 1m, 2m, 4m, ...
+  up to 30 minutes (with +/-20% jitter), on top of the cap of 3 submitted logins per hour.
+  The event loop and the calendar pollers back off the same way (30s up to 10 minutes) and
+  reset on success.
+- **A failed re-login no longer strands the client.** The old token stays in place, so
+  the next request after the delay tries again. The client's credentials are now guarded
+  by a mutex (poller, handlers and the session hand-over share one client).
 
 ### Safety rails
 

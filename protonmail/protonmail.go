@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -87,7 +88,15 @@ type Client struct {
 
 	HTTPClient *http.Client
 	ReAuth     func() error
+	// Gate, if set, is consulted before every request that carries credentials. A
+	// non-nil error fails the request locally without touching the network. It lets
+	// the re-authentication logic stop a client from hammering Proton with a dead
+	// token while it waits for a human. Detached clients never have one.
+	Gate func() error
 
+	// credsMu guards uid and accessToken: the event poller, request handlers and
+	// the re-authentication hand-over (AdoptSession) all use one client.
+	credsMu     sync.RWMutex
 	uid         string
 	accessToken string
 	keyRing     openpgp.EntityList
@@ -107,15 +116,28 @@ func (c *Client) Detached() *Client {
 // AdoptSession takes over the authenticated session and unlocked keys of d, a
 // client obtained from Detached that has finished authenticating.
 func (c *Client) AdoptSession(d *Client) {
-	c.uid, c.accessToken, c.keyRing = d.uid, d.accessToken, d.keyRing
+	uid, token := d.credentials()
+	c.setCredentials(uid, token)
+	c.keyRing = d.keyRing
+}
+
+func (c *Client) credentials() (uid, accessToken string) {
+	c.credsMu.RLock()
+	defer c.credsMu.RUnlock()
+	return c.uid, c.accessToken
+}
+
+func (c *Client) setCredentials(uid, accessToken string) {
+	c.credsMu.Lock()
+	defer c.credsMu.Unlock()
+	c.uid, c.accessToken = uid, accessToken
 }
 
 // SetSession seeds the client with an existing authenticated session (a UID and
 // access token obtained elsewhere), so API calls can be made without performing
 // a fresh login. Used by the session-import path.
 func (c *Client) SetSession(uid, accessToken string) {
-	c.uid = uid
-	c.accessToken = accessToken
+	c.setCredentials(uid, accessToken)
 }
 
 // SetHumanVerification attaches a token the account owner obtained by completing
@@ -133,9 +155,9 @@ func (c *Client) ClearHumanVerification() {
 }
 
 func (c *Client) setRequestAuthorization(req *http.Request) {
-	if c.uid != "" && c.accessToken != "" {
-		req.Header.Set("X-Pm-Uid", c.uid)
-		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	if uid, token := c.credentials(); uid != "" && token != "" {
+		req.Header.Set("X-Pm-Uid", uid)
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 }
 
@@ -189,6 +211,12 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	}
 	req.Header.Set("User-Agent", ua)
 
+	if _, authed := req.Header["Authorization"]; authed && c.Gate != nil {
+		if err := c.Gate(); err != nil {
+			return nil, err
+		}
+	}
+
 	httpClient := c.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -204,7 +232,10 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	canRetry := req.Body == nil || req.GetBody != nil
 	if resp.StatusCode == http.StatusUnauthorized && hasAuth && c.ReAuth != nil && canRetry {
 		resp.Body.Close()
-		c.accessToken = ""
+		// The old token stays in place on purpose. Blanking it before ReAuth meant a
+		// failed ReAuth left the client without credentials, so later requests carried
+		// no Authorization header, never reached this branch again, and the bridge
+		// stayed dead until restarted even after a transient failure.
 		if err := c.ReAuth(); err != nil {
 			return resp, err
 		}

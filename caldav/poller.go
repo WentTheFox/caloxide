@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/mathewcsims/protoxide/backoff"
 	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
 )
@@ -13,6 +14,11 @@ import (
 // changes. Proton's web client polls on a similar cadence; each idle poll is a
 // single cheap request that just echoes the current cursor.
 const calendarPollInterval = 30 * time.Second
+
+// maxPollBackoff caps the wait after repeated failures: 30s, 1m, 2m, 4m, 8m, then
+// every ~10 minutes until a poll succeeds again. Retrying a dead session every 30
+// seconds helps nobody and makes this client look abusive to Proton.
+const maxPollBackoff = 10 * time.Minute
 
 // pollCalendar drives Proton's calendar event loop
 // (GET /calendar/v1/{calID}/modelevents/{cursor}) to keep the decrypted cache
@@ -29,8 +35,11 @@ func (b *backend) pollCalendar(calID string) {
 	}
 	log.Printf("poller %s: started, cursor seeded", calID)
 
+	bo := backoff.New(calendarPollInterval, maxPollBackoff)
+	wait := calendarPollInterval
 	for {
-		time.Sleep(calendarPollInterval)
+		time.Sleep(wait)
+		failed := false
 
 		// Drain all currently-available pages before sleeping again.
 		for {
@@ -39,6 +48,7 @@ func (b *backend) pollCalendar(calID string) {
 				log.Printf("poller %s: poll failed: %v", calID, err)
 				notify.Send("warning", "poller-poll", "protoxide: inbound poll failing",
 					fmt.Sprintf("Polling Proton's calendar event loop failed: %v. Inbound sync is stalled; this often means the Proton session needs refreshing.", err))
+				failed = true
 				break
 			}
 
@@ -59,6 +69,14 @@ func (b *backend) pollCalendar(calID string) {
 				break
 			}
 			// More pages pending: fetch immediately without waiting.
+		}
+
+		if failed {
+			wait = bo.Next()
+			log.Printf("poller %s: next attempt in %s", calID, wait.Round(time.Second))
+		} else {
+			bo.Reset()
+			wait = calendarPollInterval
 		}
 	}
 }

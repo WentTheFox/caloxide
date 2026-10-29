@@ -170,3 +170,15 @@ func TestImportCapsTheNumberOfCookies(t *testing.T) {
 		t.Errorf("imported %d cookies, cap is %d", n, maxCookies)
 	}
 }
+
+func TestNamesListsNamesOnly(t *testing.T) {
+	j := newJar()
+	j.SetCookies(api, []*http.Cookie{sessionID(), {Name: "Tag", Value: "tag-val", Path: "/", MaxAge: 100}, {Name: "tmp", Value: "x", Path: "/"}})
+	got := strings.Join(j.Names(), ",")
+	if got != "Session-Id,Tag" {
+		t.Errorf("Names() = %q, want the persistent cookies only", got)
+	}
+	if strings.Contains(got, "SECRET") || strings.Contains(got, "tag-val") {
+		t.Errorf("Names() leaked a value: %q", got)
+	}
+}

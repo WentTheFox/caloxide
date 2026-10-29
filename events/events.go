@@ -5,10 +5,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mathewcsims/protoxide/backoff"
 	"github.com/mathewcsims/protoxide/protonmail"
 )
 
 const pollInterval = 30 * time.Second
+
+// maxErrorBackoff caps the wait after repeated failures (30s, 1m, 2m, ... 10m).
+const maxErrorBackoff = 10 * time.Minute
 
 type Receiver struct {
 	c *protonmail.Client
@@ -23,17 +27,22 @@ func (r *Receiver) receiveEvents() {
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 
+	bo := backoff.New(pollInterval, maxErrorBackoff)
 	var last string
 	for {
 		event, err := r.c.GetEvent(last)
 		if err != nil {
-			log.Println("cannot receive event:", err)
+			wait := bo.Next()
+			log.Printf("cannot receive event: %v (next attempt in %s)", err, wait.Round(time.Second))
+			timer := time.NewTimer(wait)
 			select {
-			case <-t.C:
+			case <-timer.C:
 			case <-r.poll:
 			}
+			timer.Stop()
 			continue
 		}
+		bo.Reset()
 		last = event.ID
 
 		r.locker.Lock()

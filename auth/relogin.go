@@ -10,6 +10,7 @@ import (
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 
+	"github.com/mathewcsims/protoxide/backoff"
 	"github.com/mathewcsims/protoxide/credstore"
 	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
@@ -33,11 +34,14 @@ const (
 	apiCodeInvalidRefreshToken = 10013
 	apiCodeHumanVerification   = 9001
 
-	// Proton locks accounts after repeated failed logins, so unattended retries
-	// are capped: maxAttempts logins per window, then the breaker opens until the
-	// oldest attempt ages out (or a human runs `protoxide auth`).
+	// Proton locks accounts after repeated failed logins, so unattended retries are
+	// capped twice over: each failure delays the next attempt exponentially, and no
+	// more than maxAttempts logins are submitted per window.
 	maxAttempts = 3
 	window      = time.Hour
+
+	reloginBackoffBase = 30 * time.Second // then 1m, 2m, 4m ... up to the max
+	reloginBackoffMax  = 30 * time.Minute
 
 	secretsTimeout = 30 * time.Second
 	// A code is single-use inside its 30 s step; wait this long past the step
@@ -45,12 +49,25 @@ const (
 	stepMargin = 500 * time.Millisecond
 )
 
-// SuspendedError is returned while the retry breaker is open.
-type SuspendedError struct{ Until time.Time }
+// SuspendedError is returned while unattended re-authentication is paused, either
+// backing off after a failure or because the per-window cap was reached.
+type SuspendedError struct {
+	Until  time.Time
+	Reason string
+}
 
 func (e *SuspendedError) Error() string {
-	return fmt.Sprintf("unattended re-authentication suspended after %d failed attempts; retry after %s or run `protoxide auth`",
-		maxAttempts, e.Until.Format(time.RFC3339))
+	return fmt.Sprintf("unattended re-authentication paused (%s); next attempt not before %s, or run `protoxide auth` and restart the bridge",
+		e.Reason, e.Until.Format(time.RFC3339))
+}
+
+// HumanVerificationError means Proton demanded a CAPTCHA. That cannot be answered
+// unattended and retrying only looks abusive, so the bridge stops calling Proton
+// until a human runs `protoxide auth` and restarts it.
+type HumanVerificationError struct{ Username string }
+
+func (e *HumanVerificationError) Error() string {
+	return fmt.Sprintf("Proton wants human verification, which cannot be done unattended; run `protoxide auth %s` and restart the bridge", e.Username)
 }
 
 // reloginer logs in to Proton again, unattended, using secrets from an external
@@ -61,14 +78,26 @@ type reloginer struct {
 
 	now   func() time.Time
 	sleep func(time.Duration)
+	bo    *backoff.Backoff
 
-	mu       sync.Mutex
-	attempts []time.Time
-	lastStep int64 // TOTP step last submitted, -1 if none
+	mu sync.Mutex // serialises re-logins; held across network calls
+
+	st          sync.Mutex // guards the fields below; never held across I/O
+	attempts    []time.Time
+	nextAttempt time.Time
+	humanNeeded *HumanVerificationError
+
+	lastStep int64 // TOTP step last submitted, -1 if none; only touched under mu
 }
 
 func newReloginer(p credstore.Provider) *reloginer {
-	return &reloginer{provider: p, now: time.Now, sleep: time.Sleep, lastStep: -1}
+	return &reloginer{
+		provider: p,
+		now:      time.Now,
+		sleep:    time.Sleep,
+		bo:       backoff.New(reloginBackoffBase, reloginBackoffMax),
+		lastStep: -1,
+	}
 }
 
 func (r *reloginer) fetch() (credstore.Secrets, error) {
@@ -114,18 +143,40 @@ func (r *reloginer) populate(cached *CachedAuth) error {
 	return apply(cached, sec, cached.Auth.PasswordMode)
 }
 
+// blocked reports whether unattended re-authentication is currently off limits:
+// a CAPTCHA is pending (until restart), the per-window cap is reached, or an
+// exponential backoff delay has not elapsed. It never blocks on network I/O, so it
+// can serve as the protonmail.Client gate: while it returns an error, requests that
+// carry a (dead) token fail locally and Proton is not contacted at all.
+func (r *reloginer) blocked() error {
+	r.st.Lock()
+	defer r.st.Unlock()
+	if r.humanNeeded != nil {
+		return r.humanNeeded
+	}
+	now := r.now()
+	if until, open := r.breakerOpen(now); open {
+		return &SuspendedError{Until: until, Reason: fmt.Sprintf("%d login attempts in the last %s", maxAttempts, window)}
+	}
+	if now.Before(r.nextAttempt) {
+		return &SuspendedError{Until: r.nextAttempt, Reason: fmt.Sprintf("backing off after %d failed attempt(s)", r.bo.Failures())}
+	}
+	return nil
+}
+
 // reauth performs SRP login, answers a TOTP challenge when needed, and updates the
 // in-memory secrets. The caller unlocks the keys afterwards.
 func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*protonmail.Auth, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := r.now()
-	if until, open := r.breakerOpen(now); open {
-		err := &SuspendedError{Until: until}
-		log.Printf("auth: %v", err)
-		notify.Send("failure", "relogin-suspended", "protoxide: re-authentication suspended",
-			fmt.Sprintf("Account %q: %v", username, err))
+	if err := r.blocked(); err != nil {
+		var hv *HumanVerificationError
+		if !errors.As(err, &hv) { // a CAPTCHA was already alerted when it happened
+			log.Printf("auth: %v", err)
+			notify.Send("failure", "relogin-suspended", "protoxide: re-authentication paused",
+				fmt.Sprintf("Account %q: %v", username, err))
+		}
 		return nil, err
 	}
 
@@ -139,14 +190,17 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 		return nil, r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: failed to get auth info: %w", err))
 	}
 
-	r.attempts = append(r.attempts, now) // counted before the login, whatever its outcome
-	log.Printf("auth: Proton session expired; logging in again with credentials from the secret store (attempt %d of %d allowed per %s)", len(r.attempts), maxAttempts, window)
+	r.st.Lock()
+	r.attempts = append(r.attempts, r.now()) // counted before the login, whatever its outcome
+	n := len(r.attempts)
+	r.st.Unlock()
+	log.Printf("auth: Proton session expired; logging in again with credentials from the secret store (attempt %d of %d allowed per %s)", n, maxAttempts, window)
+
 	auth, err := c.Auth(username, sec.LoginPassword, info)
 	if err != nil {
 		var apiErr *protonmail.APIError
 		if errors.As(err, &apiErr) && apiErr.Code == apiCodeHumanVerification {
-			return nil, r.fail(username, "relogin-failed", fmt.Errorf(
-				"cannot re-authenticate: Proton wants human verification, which cannot be done unattended; run `protoxide auth %s`", username))
+			return nil, r.latchHumanVerification(username)
 		}
 		return nil, r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: %w", err))
 	}
@@ -169,7 +223,12 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 		return nil, r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: %w", err))
 	}
 
-	r.attempts = nil // a successful login resets the breaker
+	// A successful login resets the breaker and the backoff.
+	r.st.Lock()
+	r.attempts = nil
+	r.nextAttempt = time.Time{}
+	r.st.Unlock()
+	r.bo.Reset()
 	log.Printf("auth: re-authenticated unattended (2FA answered: %v)", auth.TwoFactor.Enabled != 0)
 	notify.Send("success", "relogin-ok", "protoxide: re-authenticated",
 		fmt.Sprintf("Account %q logged in again unattended.", username))
@@ -195,7 +254,8 @@ func (r *reloginer) answerTOTP(c protonAPI, seed string) (string, error) {
 	return scope, nil
 }
 
-// breakerOpen reports whether maxAttempts logins already happened inside the window.
+// breakerOpen reports whether maxAttempts logins already happened inside the
+// window. The caller holds r.st.
 func (r *reloginer) breakerOpen(now time.Time) (time.Time, bool) {
 	kept := r.attempts[:0]
 	for _, t := range r.attempts {
@@ -210,11 +270,30 @@ func (r *reloginer) breakerOpen(now time.Time) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// fail alerts (debounced by key) and returns err unchanged. Errors reaching here
-// carry no secret values: credstore and totp scrub theirs, and Proton API errors
-// contain only the API's own message.
+// latchHumanVerification records that Proton wants a CAPTCHA. Retrying cannot help
+// and every extra attempt makes the client look more like abuse, so the bridge
+// stops calling Proton until a human intervenes.
+func (r *reloginer) latchHumanVerification(username string) error {
+	hv := &HumanVerificationError{Username: username}
+	r.st.Lock()
+	r.humanNeeded = hv
+	r.st.Unlock()
+	log.Printf("auth: unattended re-authentication stopped: %v", hv)
+	notify.Send("failure", "relogin-human", "protoxide: Proton wants a CAPTCHA",
+		fmt.Sprintf("Account %q: %v. The bridge makes no more Proton requests until then.", username, hv))
+	return hv
+}
+
+// fail logs and alerts (debounced by key), schedules the next attempt with
+// exponential backoff, and returns err unchanged. Errors reaching here carry no
+// secret values: credstore and totp scrub theirs, and Proton API errors contain
+// only the API's own message.
 func (r *reloginer) fail(username, key string, err error) error {
-	log.Printf("auth: unattended re-authentication failed: %v", err)
+	wait := r.bo.Next()
+	r.st.Lock()
+	r.nextAttempt = r.now().Add(wait)
+	r.st.Unlock()
+	log.Printf("auth: unattended re-authentication failed: %v (next attempt in %s)", err, wait.Round(time.Second))
 	notify.Send("failure", key, "protoxide: re-authentication failed",
 		fmt.Sprintf("Account %q: %v", username, err))
 	return err

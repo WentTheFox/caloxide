@@ -53,6 +53,8 @@ type fakeAPI struct {
 	authErr      error
 	totpErr      error
 
+	refreshCalls, infoCalls, unlockCalls int
+
 	authCalls  int
 	passwords  []string
 	totpCodes  []string
@@ -63,6 +65,7 @@ type fakeAPI struct {
 // behave like Proton's anonymous endpoints (see AuthInfo).
 func (f *fakeAPI) SetSession(uid, token string) { f.sessionUID, f.sessionToken = uid, token }
 func (f *fakeAPI) Unlock(a *protonmail.Auth, _ map[string][]byte, pass string) (openpgp.EntityList, error) {
+	f.unlockCalls++
 	f.unlockPass = append(f.unlockPass, pass)
 	if a.AccessToken == "old" && !f.storedValid {
 		return nil, &protonmail.APIError{Code: 401, Message: "access token expired"}
@@ -70,6 +73,7 @@ func (f *fakeAPI) Unlock(a *protonmail.Auth, _ map[string][]byte, pass string) (
 	return openpgp.EntityList{}, nil
 }
 func (f *fakeAPI) AuthRefresh(*protonmail.Auth) (*protonmail.Auth, error) {
+	f.refreshCalls++
 	return nil, f.refreshErr
 }
 
@@ -77,6 +81,7 @@ func (f *fakeAPI) AuthRefresh(*protonmail.Auth) (*protonmail.Auth, error) {
 // access token (even a dead one) is rejected with 401 "Invalid access token". That
 // is exactly what broke the first real run, so the fake enforces it.
 func (f *fakeAPI) AuthInfo(string) (*protonmail.AuthInfo, error) {
+	f.infoCalls++
 	if f.sessionToken != "" || f.sessionUID != "" {
 		return nil, &protonmail.APIError{Code: 401, Message: "Invalid access token"}
 	}
@@ -191,6 +196,7 @@ func TestBreakerOpensAfterThreeFailedLogins(t *testing.T) {
 	api := &fakeAPI{refreshErr: deadRefresh(), authErr: &protonmail.APIError{Code: 8002, Message: "wrong password"}}
 
 	for i := 0; i < maxAttempts; i++ {
+		ck.t = ck.t.Add(5 * time.Minute) // well past any backoff delay, well inside the window
 		if _, err := authenticate(api, testSession(), "me", r); err == nil || errors.As(err, new(*SuspendedError)) {
 			t.Fatalf("attempt %d: want a plain login failure, got %v", i, err)
 		}
@@ -199,19 +205,101 @@ func TestBreakerOpensAfterThreeFailedLogins(t *testing.T) {
 		t.Fatalf("login attempts = %d, want %d", api.authCalls, maxAttempts)
 	}
 
+	ck.t = ck.t.Add(5 * time.Minute) // backoff is over, but the per-window cap is not
+	before := *api
 	_, err := authenticate(api, testSession(), "me", r)
 	var sus *SuspendedError
-	if !errors.As(err, &sus) {
-		t.Fatalf("want SuspendedError once the breaker is open, got %v", err)
+	if !errors.As(err, &sus) || !strings.Contains(sus.Reason, "login attempts") {
+		t.Fatalf("want the per-window cap, got %v", err)
 	}
-	if api.authCalls != maxAttempts {
-		t.Error("the breaker must stop contacting Proton's login endpoint")
+	if api.authCalls != before.authCalls || api.refreshCalls != before.refreshCalls || api.infoCalls != before.infoCalls || api.unlockCalls != before.unlockCalls {
+		t.Error("while the breaker is open Proton must not be contacted at all")
 	}
 
 	ck.t = ck.t.Add(window + time.Second)
 	api.authErr, api.loginAuth = nil, authWith(protonmail.PasswordSingle, 0, 0)
 	if _, err := authenticate(api, testSession(), "me", r); err != nil {
 		t.Fatalf("after the window the breaker should close: %v", err)
+	}
+}
+
+func TestBackoffGrowsExponentiallyAndRecoveryResetsIt(t *testing.T) {
+	p := &fakeProvider{err: errors.New("infisical login: unexpected HTTP status 503")}
+	r, ck := newTest(p)
+	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
+
+	for n := 1; n <= 8; n++ {
+		if _, err := authenticate(api, testSession(), "me", r); err == nil {
+			t.Fatalf("failure %d: expected an error", n)
+		}
+		delay := r.nextAttempt.Sub(ck.t)
+		want := reloginBackoffBase << uint(n-1)
+		if want > reloginBackoffMax {
+			want = reloginBackoffMax
+		}
+		if delay < want*8/10 || delay > want*12/10 || delay > reloginBackoffMax {
+			t.Fatalf("failure %d: delay %v, want about %v (+/-20%%, max %v)", n, delay, want, reloginBackoffMax)
+		}
+
+		// During the delay nothing is contacted: not Proton, not the secret store.
+		calls, refreshes := p.calls, api.refreshCalls
+		ck.t = ck.t.Add(delay / 2)
+		var sus *SuspendedError
+		if _, err := authenticate(api, testSession(), "me", r); !errors.As(err, &sus) {
+			t.Fatalf("failure %d: want a SuspendedError during backoff, got %v", n, err)
+		}
+		if p.calls != calls || api.refreshCalls != refreshes {
+			t.Fatalf("failure %d: backoff still contacted the secret store or Proton", n)
+		}
+		ck.t = r.nextAttempt.Add(time.Second)
+	}
+
+	p.err, p.sec = nil, credstore.Secrets{LoginPassword: testLogin}
+	if _, err := authenticate(api, testSession(), "me", r); err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+	if r.bo.Failures() != 0 || !r.nextAttempt.IsZero() || r.blocked() != nil {
+		t.Error("a successful login must reset the backoff")
+	}
+}
+
+func TestCaptchaLatchesUntilRestartWithoutContactingProton(t *testing.T) {
+	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin}}
+	r, ck := newTest(p)
+	api := &fakeAPI{refreshErr: deadRefresh(), authErr: &protonmail.APIError{Code: 9001, Message: "captcha"}}
+
+	_, err := authenticate(api, testSession(), "me", r)
+	var hv *HumanVerificationError
+	if !errors.As(err, &hv) || !strings.Contains(err.Error(), "protoxide auth me") || !strings.Contains(err.Error(), "restart") {
+		t.Fatalf("want guidance to run auth and restart, got %v", err)
+	}
+	if !errors.As(r.blocked(), &hv) {
+		t.Fatal("the gate must report the pending CAPTCHA")
+	}
+
+	calls := *api
+	providerCalls := p.calls
+	for _, wait := range []time.Duration{time.Minute, time.Hour, 48 * time.Hour} {
+		ck.t = ck.t.Add(wait)
+		if _, err := authenticate(api, testSession(), "me", r); !errors.As(err, &hv) {
+			t.Fatalf("after %v: still must be blocked on the CAPTCHA, got %v", wait, err)
+		}
+	}
+	if api.refreshCalls != calls.refreshCalls || api.infoCalls != calls.infoCalls || api.authCalls != calls.authCalls || p.calls != providerCalls {
+		t.Error("a pending CAPTCHA must stop every Proton and secret-store request")
+	}
+
+	// A restart is a new process, and so a new reloginer.
+	fresh, _ := newTest(p)
+	if fresh.blocked() != nil {
+		t.Error("a restarted bridge must try again")
+	}
+}
+
+func TestGateIsOpenWhenNothingHasFailed(t *testing.T) {
+	r, _ := newTest(&fakeProvider{})
+	if err := r.blocked(); err != nil {
+		t.Errorf("fresh reloginer is blocked: %v", err)
 	}
 }
 

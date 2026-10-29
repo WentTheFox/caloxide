@@ -116,6 +116,23 @@ func (j *Jar) Export() ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// Names lists the names (never the values) of the persistent cookies held, sorted
+// and de-duplicated, for diagnostics.
+func (j *Jar) Names() []string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range j.saved {
+		if e.Expires.After(j.now()) && !seen[e.Name] {
+			seen[e.Name] = true
+			out = append(out, e.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Import loads cookies produced by Export. Expired entries, entries for hosts the
 // jar does not accept, and anything past the size limits are ignored. Empty input
 // is not an error. Errors never contain cookie values.
