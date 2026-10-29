@@ -90,3 +90,14 @@ according to it**. Tested 2026-10-29:
 
 So the Drive form is not usable for this calendar bridge, and there is no known calendar
 equivalent: keep the default. Run `protoxide auth` with the same value the bridge uses.
+
+The exact value used in that test, for anyone who wants to reproduce it. It is **not** shipped
+as a default anywhere (neither the binary, the image nor the Homelab compose file), and it
+is not recommended:
+
+    # example only: logs in, but calendar endpoints then answer 9100
+    PROTOXIDE_PROTONDRIVE_APP_VERSION=external-drive-protoxide@0.2.1-stable
+    # or:  protoxide --protondrive-app-version external-drive-protoxide@0.2.1-stable auth <address>
+
+Use a separate `-config-home` so the experiment cannot disturb a working session, and revoke
+its session in Proton afterwards (it shows as "Proton Drive Generic Client").
