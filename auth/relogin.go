@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -117,6 +118,7 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 	now := r.now()
 	if until, open := r.breakerOpen(now); open {
 		err := &SuspendedError{Until: until}
+		log.Printf("auth: %v", err)
 		notify.Send("failure", "relogin-suspended", "protoxide: re-authentication suspended",
 			fmt.Sprintf("Account %q: %v", username, err))
 		return nil, err
@@ -133,6 +135,7 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 	}
 
 	r.attempts = append(r.attempts, now) // counted before the login, whatever its outcome
+	log.Printf("auth: Proton session expired; logging in again with credentials from the secret store (attempt %d of %d allowed per %s)", len(r.attempts), maxAttempts, window)
 	auth, err := c.Auth(username, sec.LoginPassword, info)
 	if err != nil {
 		var apiErr *protonmail.APIError
@@ -162,6 +165,7 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 	}
 
 	r.attempts = nil // a successful login resets the breaker
+	log.Printf("auth: re-authenticated unattended (2FA answered: %v)", auth.TwoFactor.Enabled != 0)
 	notify.Send("success", "relogin-ok", "protoxide: re-authenticated",
 		fmt.Sprintf("Account %q logged in again unattended.", username))
 	return auth, nil
@@ -205,6 +209,7 @@ func (r *reloginer) breakerOpen(now time.Time) (time.Time, bool) {
 // carry no secret values: credstore and totp scrub theirs, and Proton API errors
 // contain only the API's own message.
 func (r *reloginer) fail(username, key string, err error) error {
+	log.Printf("auth: unattended re-authentication failed: %v", err)
 	notify.Send("failure", key, "protoxide: re-authentication failed",
 		fmt.Sprintf("Account %q: %v", username, err))
 	return err
