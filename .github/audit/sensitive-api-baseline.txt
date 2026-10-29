@@ -1,6 +1,7 @@
 # Reviewed baseline: <pattern><TAB><file>. New pairs fail .github/scripts/audit-source.sh.
 # Regenerate with: .github/scripts/audit-source.sh --update-baseline  (then READ the diff).
 binary	protoxide-logo.png
+http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	auth/auth.go
 http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	cmd/protoxide/humanverify.go
 http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	cmd/protoxide/main.go
 http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	credstore/infisical.go

@@ -161,6 +161,27 @@ test covers it with a fake Proton server. This also removes a failure mode that 
 have made unattended recovery pointless. `Manager` now has a mutex around its session
 map, which was previously unguarded under concurrent requests.
 
+### Finding: the CAPTCHA wall, and persistent cookies
+
+The first real test (a revoked session) got as far as submitting a fresh login, and
+Proton answered with a human-verification CAPTCHA (code 9001), which cannot be answered
+unattended. Observed facts: Proton's API sets `Session-Id` (90-day `Max-Age`) and `Tag`
+cookies on the very first anonymous request; protoxide had no cookie jar, so every login
+arrived as a brand-new client; the official Bridge keeps a persistent cookie jar in its
+encrypted vault. Hypothesis, not proven: a login that presents the `Session-Id` from an
+earlier session is treated as a known client and is challenged less often.
+
+So protoxide now keeps the cookies Proton's own hosts set (`cookiestore`: persistent
+cookies only, `proton.me` hosts only, size-capped), seeds a jar from them on every
+start, shares it with the detached authentication client, and stores them inside the
+already-encrypted session record. `protoxide auth` saves the cookies of the login it
+performed, so the unattended re-logins that follow present the same `Session-Id`.
+
+Whether this removes the CAPTCHA for re-logins can only be learned from the real
+account. If Proton still challenges them, unattended recovery after a *revoked* session
+is not possible; it still helps when the refresh token merely expired, and the bridge
+reports the challenge with the exact command to run.
+
 ### Safety rails
 
 - Re-authentication is rate-limited with backoff and a circuit breaker (for example

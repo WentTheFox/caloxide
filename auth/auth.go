@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"os"
 	"sync"
 
@@ -15,6 +17,7 @@ import (
 	"golang.org/x/crypto/nacl/secretbox"
 
 	"github.com/mathewcsims/protoxide/config"
+	"github.com/mathewcsims/protoxide/cookiestore"
 	"github.com/mathewcsims/protoxide/credstore"
 	"github.com/mathewcsims/protoxide/protonmail"
 )
@@ -28,7 +31,35 @@ type CachedAuth struct {
 	LoginPassword   string
 	MailboxPassword string
 	KeySalts        map[string][]byte
+	// Cookies are the persistent cookies Proton's API set (see package cookiestore),
+	// so a later login presents the same Session-Id as an earlier one. They identify
+	// this client to Proton, so they live in this encrypted record like the tokens.
+	Cookies []byte
 	// TODO: add padding
+}
+
+// attachCookieJar gives c a cookie jar seeded from saved and returns it, so the
+// caller can export it again when the session is stored. The jar is attached to a
+// copy of c's http.Client, and the detached clients used for re-authentication
+// inherit it. A saved value that cannot be read is ignored, never fatal.
+func attachCookieJar(c *protonmail.Client, saved []byte, allow func(host string) bool) *cookiestore.Jar {
+	jar := cookiestore.New(allow)
+	if err := jar.Import(saved); err != nil {
+		log.Printf("cookies: ignoring unreadable saved cookies: %v", err)
+	}
+	hc := http.Client{}
+	if c.HTTPClient != nil {
+		hc = *c.HTTPClient
+	}
+	hc.Jar = jar
+	c.HTTPClient = &hc
+	return jar
+}
+
+// NewCookieJar attaches an empty jar for Proton's hosts to c, for the interactive
+// login: the cookies it collects are stored with the session (CachedAuth.Cookies).
+func NewCookieJar(c *protonmail.Client) *cookiestore.Jar {
+	return attachCookieJar(c, nil, cookiestore.ProtonHosts)
 }
 
 // WithoutSecrets returns a copy without the static passwords, for storage when
@@ -247,6 +278,14 @@ func (m *Manager) UseSecrets(p credstore.Provider) {
 	m.rl = newReloginer(p)
 }
 
+// persistSession stores the session together with the jar's current cookies.
+func (m *Manager) persistSession(c *CachedAuth, jar *cookiestore.Jar, username string, key *[32]byte) error {
+	if b, err := jar.Export(); err == nil {
+		c.Cookies = b
+	}
+	return m.save(c, username, key)
+}
+
 // save persists the session, leaving the static passwords out when they live in
 // an external secret store.
 func (m *Manager) save(c *CachedAuth, username string, key *[32]byte) error {
@@ -301,6 +340,9 @@ func (m *Manager) Auth(username, password string) (*protonmail.Client, openpgp.E
 		}
 
 		c := m.newClient()
+		jar := attachCookieJar(c, cachedAuth.Cookies, cookiestore.ProtonHosts)
+		// persist stores the session together with the current cookies.
+		persist := func() error { return m.persistSession(&cachedAuth, jar, username, &secretKey) }
 		reauth := func() (openpgp.EntityList, error) {
 			return reauthenticate(c, &cachedAuth, username, m.rl)
 		}
@@ -313,7 +355,7 @@ func (m *Manager) Auth(username, password string) (*protonmail.Client, openpgp.E
 			if _, err := reauth(); err != nil {
 				return err
 			}
-			return m.save(&cachedAuth, username, &secretKey)
+			return persist()
 		}
 
 		// reauth updates cachedAuth with the new refresh token. c is not shared
@@ -323,7 +365,7 @@ func (m *Manager) Auth(username, password string) (*protonmail.Client, openpgp.E
 			return nil, nil, err
 		}
 
-		if err := m.save(&cachedAuth, username, &secretKey); err != nil {
+		if err := persist(); err != nil {
 			return nil, nil, err
 		}
 

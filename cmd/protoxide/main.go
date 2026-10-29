@@ -448,6 +448,9 @@ func main() {
 		}
 
 		c := newClient()
+		// Keep Proton's cookies from this login with the session, so later unattended
+		// re-logins look like the same client rather than a brand-new one.
+		jar := auth.NewCookieJar(c)
 
 		var a *protonmail.Auth
 		/*if cachedAuth, ok := auths[username]; ok {
@@ -560,11 +563,13 @@ func main() {
 			log.Fatal(err)
 		}
 
+		cookies, _ := jar.Export()
 		err = auth.EncryptAndSave(forStorage(&auth.CachedAuth{
 			Auth:            *a,
 			LoginPassword:   loginPassword,
 			MailboxPassword: mailboxPassword,
 			KeySalts:        keySalts,
+			Cookies:         cookies,
 		}), username, secretKey)
 		if err != nil {
 			log.Fatal(err)
