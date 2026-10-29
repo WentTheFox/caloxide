@@ -120,6 +120,25 @@ func secretsBackend() credstore.Provider {
 
 // forStorage drops the static passwords from c when they live in an external
 // secret store, so they never reach auth.json.
+// warnIfNoSecretsBackend makes the silent fallback audible: without a backend,
+// `auth` asks for the password and keeps it in auth.json. If Infisical settings are
+// present but the switch is not, the likely cause is a half-configured shell.
+func warnIfNoSecretsBackend() {
+	if secretsBackend() != nil {
+		return
+	}
+	var set []string
+	for _, kv := range os.Environ() {
+		if name, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, "PROTOXIDE_INFISICAL_") {
+			set = append(set, name)
+		}
+	}
+	if len(set) > 0 {
+		fmt.Printf("Warning: %s is not set to infisical, so the %d PROTOXIDE_INFISICAL_* variable(s) in your environment are being ignored.\n", credstore.BackendEnv, len(set))
+	}
+	fmt.Printf("Note: no secrets backend is active, so the password will be asked for here and stored (encrypted) in auth.json. To use Infisical, set %s=infisical and the PROTOXIDE_INFISICAL_* variables.\n", credstore.BackendEnv)
+}
+
 // storedSecrets reads whatever the configured secret store holds, or returns the
 // zero value when none is configured. A store that is configured but unreachable
 // is fatal rather than silently falling back to prompting.
@@ -439,6 +458,7 @@ func main() {
 		// With a secrets backend, whatever it holds is used and only the rest is
 		// asked for interactively.
 		stored := storedSecrets()
+		warnIfNoSecretsBackend()
 		username := authCmd.Arg(0)
 		if username == "" {
 			username = stored.Username
