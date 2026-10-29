@@ -807,6 +807,20 @@ func main() {
 		if p := secretsBackend(); p != nil {
 			authManager.UseSecrets(p)
 			log.Printf("secrets: static Proton credentials come from %s, not auth.json", os.Getenv(credstore.BackendEnv))
+			// Load the alert webhook now so a later secret-store outage can still be
+			// reported. Not fatal: the first request and every re-login retry it.
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				sec, err := p.Get(ctx)
+				if err != nil {
+					log.Printf("secrets: could not preload the alert webhook: %v", err)
+					return
+				}
+				if err := notify.SetDiscordWebhook(sec.DiscordWebhookURL); err != nil {
+					log.Printf("notify: %v", err)
+				}
+			}()
 		}
 		eventsManager := events.NewManager()
 		err := listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig)

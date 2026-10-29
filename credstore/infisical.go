@@ -21,6 +21,7 @@ const (
 	NameLoginPassword   = "PROTON_LOGIN_PASSWORD"
 	NameMailboxPassword = "PROTON_MAILBOX_PASSWORD"
 	NameTOTPSecret      = "PROTON_TOTP_SECRET"
+	NameDiscordWebhook  = "DISCORD_WEBHOOK_URL"
 )
 
 const (
@@ -118,6 +119,7 @@ func (i *Infisical) Get(ctx context.Context) (Secrets, error) {
 		{NameLoginPassword, &s.LoginPassword},
 		{NameMailboxPassword, &s.MailboxPassword},
 		{NameTOTPSecret, &s.TOTPSecret},
+		{NameDiscordWebhook, &s.DiscordWebhookURL},
 	} {
 		v, err := i.secret(ctx, token, f.name)
 		if err != nil && !errors.Is(err, ErrNotFound) {

@@ -78,6 +78,11 @@ func (r *reloginer) fetch() (credstore.Secrets, error) {
 	if err != nil {
 		return credstore.Secrets{}, err
 	}
+	// Hand the alert webhook over first, so even a problem found below (such as a
+	// missing password) can be reported.
+	if err := notify.SetDiscordWebhook(sec.DiscordWebhookURL); err != nil {
+		log.Printf("notify: %v", err)
+	}
 	if sec.LoginPassword == "" {
 		return credstore.Secrets{}, errors.New(credstore.NameLoginPassword + " is not set in the secret store")
 	}

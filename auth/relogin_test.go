@@ -10,6 +10,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 
 	"github.com/mathewcsims/protoxide/credstore"
+	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
 	"github.com/mathewcsims/protoxide/totp"
 )
@@ -309,6 +310,36 @@ func TestErrorsNeverContainSecretValues(t *testing.T) {
 				t.Errorf("%s: error leaks a secret: %v", name, err)
 			}
 		}
+	}
+}
+
+func TestFetchPublishesTheAlertWebhook(t *testing.T) {
+	t.Setenv("PROTOXIDE_APPRISE_URL", "")
+	t.Setenv("PROTOXIDE_DISCORD_WEBHOOK_URL", "")
+	t.Setenv("PROTOXIDE_DISCORD_WEBHOOK_URL_FILE", "")
+	t.Cleanup(func() { notify.SetDiscordWebhook("") })
+	if notify.Configured() {
+		t.Fatal("precondition: nothing configured")
+	}
+
+	// Published even when the fetch then fails on a missing password, so that very
+	// problem can be alerted.
+	p := &fakeProvider{sec: credstore.Secrets{DiscordWebhookURL: "https://discord.com/api/webhooks/1/tok"}}
+	r, _ := newTest(p)
+	if err := r.populate(testSession()); err == nil {
+		t.Fatal("expected the missing-password error")
+	}
+	if !notify.Configured() {
+		t.Error("the webhook from the secret store was not published to notify")
+	}
+
+	// A later fetch without it clears it again.
+	p.sec = credstore.Secrets{LoginPassword: testLogin}
+	if err := r.populate(testSession()); err != nil {
+		t.Fatal(err)
+	}
+	if notify.Configured() {
+		t.Error("removing the secret must clear the stored webhook")
 	}
 }
 

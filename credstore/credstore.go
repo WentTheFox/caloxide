@@ -20,6 +20,9 @@ type Secrets struct {
 	LoginPassword   string
 	MailboxPassword string
 	TOTPSecret      string
+	// DiscordWebhookURL is where alerts are sent when no webhook is configured in
+	// the environment. Optional.
+	DiscordWebhookURL string
 }
 
 // Describe reports which secrets are set, by name. It never includes a value or a
@@ -31,11 +34,12 @@ func (s Secrets) Describe() string {
 		}
 		return "present"
 	}
-	return fmt.Sprintf("%s: %s (optional; lets `protoxide auth` run without an argument)\n%s: %s\n%s: %s (only needed for two-password accounts)\n%s: %s (only needed for accounts with 2FA)",
+	return fmt.Sprintf("%s: %s (optional; lets `protoxide auth` run without an argument)\n%s: %s\n%s: %s (only needed for two-password accounts)\n%s: %s (only needed for accounts with 2FA)\n%s: %s (optional; where alerts go unless an environment webhook is set)",
 		NameUsername, state(s.Username),
 		NameLoginPassword, state(s.LoginPassword),
 		NameMailboxPassword, state(s.MailboxPassword),
-		NameTOTPSecret, state(s.TOTPSecret))
+		NameTOTPSecret, state(s.TOTPSecret),
+		NameDiscordWebhook, state(s.DiscordWebhookURL))
 }
 
 // Provider returns the current secrets. Implementations must not log secret

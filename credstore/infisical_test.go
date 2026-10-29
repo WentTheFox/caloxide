@@ -96,20 +96,22 @@ func TestGetAllSecretsAndRequestShape(t *testing.T) {
 	f.secrets[NameLoginPassword] = "pw"
 	f.secrets[NameMailboxPassword] = "mbox"
 	f.secrets[NameTOTPSecret] = "JBSWY3DPEHPK3PXP"
+	f.secrets[NameDiscordWebhook] = "https://discord.com/api/webhooks/1/tok"
 
 	got, err := newClient(t, f).Get(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Secrets{Username: "me@example.com", LoginPassword: "pw", MailboxPassword: "mbox", TOTPSecret: "JBSWY3DPEHPK3PXP"}
+	want := Secrets{Username: "me@example.com", LoginPassword: "pw", MailboxPassword: "mbox", TOTPSecret: "JBSWY3DPEHPK3PXP",
+		DiscordWebhookURL: "https://discord.com/api/webhooks/1/tok"}
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 	if n := f.logins.Load(); n != 1 {
 		t.Errorf("expected exactly one login per Get, got %d", n)
 	}
-	if len(f.gets) != 4 {
-		t.Fatalf("expected 4 secret reads, got %d", len(f.gets))
+	if len(f.gets) != 5 {
+		t.Fatalf("expected 5 secret reads, got %d", len(f.gets))
 	}
 	q := f.gets[0].URL.Query()
 	for k, v := range map[string]string{
@@ -365,13 +367,14 @@ func TestFromEnvBackendSelection(t *testing.T) {
 }
 
 func TestDescribeNeverPrintsValues(t *testing.T) {
-	out := Secrets{Username: "me@example.com", LoginPassword: "hunter2-xq", TOTPSecret: "JBSWY3DPEHPK3PXP"}.Describe()
-	for _, leak := range []string{"me@example", "hunter2", "xq", "JBSWY3DP", "16", "10"} {
+	out := Secrets{Username: "me@example.com", LoginPassword: "hunter2-xq", TOTPSecret: "JBSWY3DPEHPK3PXP",
+		DiscordWebhookURL: "https://discord.com/api/webhooks/1/hooktoken"}.Describe()
+	for _, leak := range []string{"me@example", "hunter2", "xq", "JBSWY3DP", "hooktoken", "discord.com", "16", "10"} {
 		if strings.Contains(out, leak) {
 			t.Errorf("Describe leaks %q: %s", leak, out)
 		}
 	}
-	for _, want := range []string{NameUsername + ": present", NameLoginPassword + ": present", NameMailboxPassword + ": missing", NameTOTPSecret + ": present"} {
+	for _, want := range []string{NameUsername + ": present", NameLoginPassword + ": present", NameMailboxPassword + ": missing", NameTOTPSecret + ": present", NameDiscordWebhook + ": present"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Describe missing %q in:\n%s", want, out)
 		}

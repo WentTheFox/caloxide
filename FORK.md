@@ -52,6 +52,12 @@ write failed, server stopped) are reported by `notify`. Sinks, each optional:
   `discordapp.com` only, path `/api/webhooks/<id>/<token>`), never followed through a
   redirect, and never written to logs. Messages cannot mention anyone, and are
   debounced to one per kind per 10 minutes.
+  With the Infisical backend it can instead live in the secret store as
+  `DISCORD_WEBHOOK_URL`; an environment webhook always wins. It is loaded into memory
+  at start and on every session load and re-login (and cleared if the secret is
+  removed), so an Infisical outage *after* start can still be reported. On a cold
+  start while Infisical is down nothing is known yet, so no alert can be sent: set the
+  environment variable too if you need alerts for that case.
 - **Apprise:** `PROTOXIDE_APPRISE_URL` (and `..._URLS`), as before.
 
 A misconfigured webhook sends nothing and logs why (without the URL).

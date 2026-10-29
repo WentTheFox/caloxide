@@ -245,3 +245,66 @@ func TestDiscordHostAllowlistIsPinned(t *testing.T) {
 		}
 	}
 }
+
+func TestStoredWebhookIsUsedWhenEnvironmentHasNone(t *testing.T) {
+	f := newFake(t, func(*http.Request) (*http.Response, error) { return reply(204, nil), nil })
+	t.Setenv(discordEnv, "")
+	if Configured() {
+		t.Fatal("nothing configured yet")
+	}
+	if err := SetDiscordWebhook(hookURL); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { SetDiscordWebhook("") })
+	if !Configured() {
+		t.Error("a stored webhook must count as configured")
+	}
+	SendSync("failure", "t", "b")
+	if len(f.requests) != 1 || f.requests[0].URL.String() != hookURL {
+		t.Fatalf("stored webhook not used: %d requests", len(f.requests))
+	}
+
+	if err := SetDiscordWebhook(""); err != nil || Configured() {
+		t.Errorf("an empty value must clear it: err=%v configured=%v", err, Configured())
+	}
+}
+
+func TestEnvironmentWebhookWinsOverStored(t *testing.T) {
+	f := newFake(t, func(*http.Request) (*http.Response, error) { return reply(204, nil), nil })
+	const stored = "https://discord.com/api/webhooks/999/STORED-token"
+	if err := SetDiscordWebhook(stored); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { SetDiscordWebhook("") })
+	SendSync("failure", "t", "b") // env (hookURL) is set by newFake
+	if len(f.requests) != 1 || f.requests[0].URL.String() != hookURL {
+		t.Fatalf("the environment webhook must win, got %v", f.requests[0].URL.Path)
+	}
+}
+
+func TestInvalidStoredWebhookIsRejectedWithoutLeaking(t *testing.T) {
+	f := newFake(t, func(*http.Request) (*http.Response, error) { return reply(204, nil), nil })
+	t.Setenv(discordEnv, "")
+	bad := "https://evil.example/api/webhooks/1/" + tokenSecret
+	err := SetDiscordWebhook(bad)
+	if err == nil {
+		t.Fatal("a webhook on another host must be rejected")
+	}
+	if strings.Contains(err.Error(), tokenSecret) || strings.Contains(err.Error(), "evil.example") {
+		t.Errorf("error echoes the URL: %v", err)
+	}
+	if Configured() {
+		t.Error("a rejected webhook must not leave anything configured")
+	}
+	SendSync("failure", "t", "b")
+	if len(f.requests) != 0 {
+		t.Error("nothing may be sent to a rejected webhook")
+	}
+
+	// A bad value also clears a previously good one.
+	SetDiscordWebhook(hookURL)
+	SetDiscordWebhook(bad)
+	if Configured() {
+		t.Error("an invalid replacement must clear the old webhook")
+	}
+}
