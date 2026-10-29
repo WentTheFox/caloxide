@@ -152,7 +152,10 @@ func authenticate(c protonAPI, cachedAuth *CachedAuth, username string, rl *relo
 
 	auth, err := c.AuthRefresh(&cachedAuth.Auth)
 	if apiErr, ok := err.(*protonmail.APIError); ok && apiErr.Code == apiCodeInvalidRefreshToken {
-		// Invalid refresh token, re-authenticate
+		// Invalid refresh token, re-authenticate. The client still holds the dead
+		// access token from the attempt above; /auth/info and /auth are anonymous
+		// requests and Proton answers 401 "Invalid access token" if one is attached.
+		c.SetSession("", "")
 		if rl != nil {
 			if auth, err = rl.reauth(c, cachedAuth, username); err != nil {
 				return nil, err

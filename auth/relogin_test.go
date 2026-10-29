@@ -45,11 +45,13 @@ func (c *fakeClock) sleep(d time.Duration) {
 }
 
 type fakeAPI struct {
-	storedValid bool // if false, Unlock rejects the stored ("old") access token
-	refreshErr  error
-	loginAuth   func() *protonmail.Auth // returned by Auth when authErr is nil
-	authErr     error
-	totpErr     error
+	storedValid  bool // if false, Unlock rejects the stored ("old") access token
+	sessionUID   string
+	sessionToken string
+	refreshErr   error
+	loginAuth    func() *protonmail.Auth // returned by Auth when authErr is nil
+	authErr      error
+	totpErr      error
 
 	authCalls  int
 	passwords  []string
@@ -57,7 +59,9 @@ type fakeAPI struct {
 	unlockPass []string
 }
 
-func (f *fakeAPI) SetSession(string, string) {}
+// SetSession records what the client would send as credentials, so the fake can
+// behave like Proton's anonymous endpoints (see AuthInfo).
+func (f *fakeAPI) SetSession(uid, token string) { f.sessionUID, f.sessionToken = uid, token }
 func (f *fakeAPI) Unlock(a *protonmail.Auth, _ map[string][]byte, pass string) (openpgp.EntityList, error) {
 	f.unlockPass = append(f.unlockPass, pass)
 	if a.AccessToken == "old" && !f.storedValid {
@@ -68,9 +72,21 @@ func (f *fakeAPI) Unlock(a *protonmail.Auth, _ map[string][]byte, pass string) (
 func (f *fakeAPI) AuthRefresh(*protonmail.Auth) (*protonmail.Auth, error) {
 	return nil, f.refreshErr
 }
-func (f *fakeAPI) AuthInfo(string) (*protonmail.AuthInfo, error) { return &protonmail.AuthInfo{}, nil }
+
+// AuthInfo and Auth are anonymous in Proton's API: a request that still carries an
+// access token (even a dead one) is rejected with 401 "Invalid access token". That
+// is exactly what broke the first real run, so the fake enforces it.
+func (f *fakeAPI) AuthInfo(string) (*protonmail.AuthInfo, error) {
+	if f.sessionToken != "" || f.sessionUID != "" {
+		return nil, &protonmail.APIError{Code: 401, Message: "Invalid access token"}
+	}
+	return &protonmail.AuthInfo{}, nil
+}
 func (f *fakeAPI) Auth(_, password string, _ *protonmail.AuthInfo) (*protonmail.Auth, error) {
 	f.authCalls++
+	if f.sessionToken != "" || f.sessionUID != "" {
+		return nil, &protonmail.APIError{Code: 401, Message: "Invalid access token"}
+	}
 	f.passwords = append(f.passwords, password)
 	if f.authErr != nil {
 		return nil, f.authErr
@@ -357,5 +373,23 @@ func TestMissingLoginPasswordIsReportedByName(t *testing.T) {
 	}
 	if err := r.populate(testSession()); err == nil || !strings.Contains(err.Error(), credstore.NameLoginPassword) {
 		t.Errorf("populate: want an error naming %s, got %v", credstore.NameLoginPassword, err)
+	}
+}
+
+// The first real run failed here: the stale token was still attached when the
+// re-login asked for /auth/info. Covers both the secrets backend and the legacy path.
+func TestReloginSendsNoStaleCredentials(t *testing.T) {
+	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin}}
+	r, _ := newTest(p)
+	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
+	if _, err := authenticate(api, testSession(), "me", r); err != nil {
+		t.Fatalf("secrets-backend re-login with a revoked session: %v", err)
+	}
+
+	legacy := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
+	cached := testSession()
+	cached.LoginPassword = testLogin
+	if _, err := authenticate(legacy, cached, "me", nil); err != nil {
+		t.Fatalf("legacy re-login with a revoked session: %v", err)
 	}
 }
