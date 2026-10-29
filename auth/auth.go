@@ -20,7 +20,6 @@ import (
 
 	"github.com/mathewcsims/protoxide/config"
 	"github.com/mathewcsims/protoxide/cookiestore"
-	"github.com/mathewcsims/protoxide/credstore"
 	"github.com/mathewcsims/protoxide/protonmail"
 )
 
@@ -33,6 +32,10 @@ type CachedAuth struct {
 	LoginPassword   string
 	MailboxPassword string
 	KeySalts        map[string][]byte
+	// TOTPSecret is the base32 seed of the account's authenticator, so a dead session
+	// can be renewed without a person typing a code. Optional; it lives only in this
+	// encrypted record (the key is the bridge password, which only the client supplies).
+	TOTPSecret string
 	// Cookies are the persistent cookies Proton's API set (see package cookiestore),
 	// so a later login presents the same Session-Id as an earlier one. They identify
 	// this client to Proton, so they live in this encrypted record like the tokens.
@@ -66,17 +69,6 @@ func attachCookieJar(c *protonmail.Client, saved []byte, allow func(host string)
 // login: the cookies it collects are stored with the session (CachedAuth.Cookies).
 func NewCookieJar(c *protonmail.Client) *cookiestore.Jar {
 	return attachCookieJar(c, nil, cookiestore.ProtonHosts)
-}
-
-// WithoutSecrets returns a copy without the static passwords, for storage when
-// they live in an external secret store instead (see docs/design/unattended-reauth.md).
-// The session tokens and key salts, which rotate and are not reusable credentials
-// on their own, are kept.
-func (c *CachedAuth) WithoutSecrets() *CachedAuth {
-	cp := *c
-	cp.LoginPassword = ""
-	cp.MailboxPassword = ""
-	return &cp
 }
 
 func readCachedAuths() (map[string]string, error) {
@@ -293,7 +285,7 @@ type Manager struct {
 	mu        sync.Mutex // guards sessions, and serialises opening and establishing them
 	sessions  map[string]*session
 
-	// rl is non-nil only when a secrets backend is configured (UseSecrets).
+	// rl is non-nil once EnableRelogin has been called (the caldav server does).
 	rl *reloginer
 
 	// Seams so the web verification flow can be tested without Proton's SRP login.
@@ -307,27 +299,22 @@ type Manager struct {
 	win *verifyWindow
 }
 
-// UseSecrets keeps the static Proton passwords (and the TOTP seed) in an external
-// secret store instead of auth.json: they are read into memory when a session is
-// established and when a re-login is needed, and never written to disk. It also
-// enables unattended re-login for TOTP accounts. Call before the first Auth.
-func (m *Manager) UseSecrets(p credstore.Provider) {
-	m.rl = newReloginer(p)
+// EnableRelogin turns on unattended re-login from the credentials stored in
+// auth.json: a dead refresh token is replaced by a fresh login (answering a TOTP
+// challenge from the stored seed), with exponential backoff, a cap on logins, and a
+// full stop when Proton demands a CAPTCHA. It also gates requests while paused and
+// makes the one-time web verification available. Call before the first Auth.
+func (m *Manager) EnableRelogin() {
+	m.rl = newReloginer()
 }
+
+// ReloginEnabled reports whether EnableRelogin was called.
+func (m *Manager) ReloginEnabled() bool { return m.rl != nil }
 
 // persistSession stores the session together with the jar's current cookies.
 func (m *Manager) persistSession(c *CachedAuth, jar *cookiestore.Jar, username string, key *[32]byte) error {
 	if b, err := jar.Export(); err == nil {
 		c.Cookies = b
-	}
-	return m.save(c, username, key)
-}
-
-// save persists the session, leaving the static passwords out when they live in
-// an external secret store.
-func (m *Manager) save(c *CachedAuth, username string, key *[32]byte) error {
-	if m.rl != nil {
-		c = c.WithoutSecrets()
 	}
 	return EncryptAndSave(c, username, key)
 }
@@ -404,7 +391,7 @@ func (m *Manager) openSession(username, password string) (*session, error) {
 	return s, nil
 }
 
-// establish makes s usable: loads the secrets (secrets backend) and authenticates.
+// establish makes s usable by authenticating it.
 // A failure leaves the session open but not ready, and a later call tries again
 // unless re-login is paused. The caller holds m.mu.
 func (m *Manager) establish(s *session) error {
@@ -415,10 +402,6 @@ func (m *Manager) establish(s *session) error {
 	}
 	if m.rl != nil {
 		if err := m.rl.blocked(); err != nil {
-			return err
-		}
-		// The passwords are not in auth.json; load them for this session.
-		if err := m.rl.populate(&s.cached); err != nil {
 			return err
 		}
 	}

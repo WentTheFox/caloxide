@@ -117,14 +117,7 @@ func TestGarbageSavedCookiesAreIgnored(t *testing.T) {
 	}
 }
 
-func TestCookiesSurviveWithoutSecrets(t *testing.T) {
-	c := &CachedAuth{LoginPassword: "p", Cookies: []byte(`[]`)}
-	if got := c.WithoutSecrets(); string(got.Cookies) != "[]" || got.LoginPassword != "" {
-		t.Errorf("WithoutSecrets must keep the cookies and drop only the passwords: %+v", got)
-	}
-}
-
-func TestPersistSessionStoresCookiesEncryptedAndKeepsPasswordsOutWhenBackendIsOn(t *testing.T) {
+func TestPersistSessionStoresCookiesAndCredentialsEncrypted(t *testing.T) {
 	config.SetConfigHome(t.TempDir())
 	var key [32]byte
 	key[0] = 9
@@ -134,8 +127,7 @@ func TestPersistSessionStoresCookiesEncryptedAndKeepsPasswordsOutWhenBackendIsOn
 	jar.SetCookies(u, []*http.Cookie{{Name: "Session-Id", Value: "device-1", Path: "/", MaxAge: 7776000}})
 
 	m := NewManager(func() *protonmail.Client { return &protonmail.Client{} })
-	m.UseSecrets(&fakeProvider{})
-	cached := &CachedAuth{Auth: protonmail.Auth{RefreshToken: "r"}, LoginPassword: "PW"}
+	cached := &CachedAuth{Auth: protonmail.Auth{RefreshToken: "r"}, LoginPassword: "PW-xyz", TOTPSecret: "SEED-xyz"}
 	if err := m.persistSession(cached, jar, "me", &key); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +150,10 @@ func TestPersistSessionStoresCookiesEncryptedAndKeepsPasswordsOutWhenBackendIsOn
 	if !strings.Contains(string(got.Cookies), "device-1") {
 		t.Errorf("cookies were not written into the session record: %s", got.Cookies)
 	}
-	if got.LoginPassword != "" {
-		t.Error("the password reached disk although a secrets backend is configured")
+	if got.LoginPassword != "PW-xyz" || got.TOTPSecret != "SEED-xyz" {
+		t.Errorf("the password and 2FA seed must be in the record for the next re-login, got %+v", got)
+	}
+	if strings.Contains(auths["me"], "PW-xyz") || strings.Contains(auths["me"], "SEED-xyz") {
+		t.Error("the password or seed is readable in auth.json without the bridge password")
 	}
 }

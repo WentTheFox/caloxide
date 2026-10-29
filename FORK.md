@@ -39,8 +39,13 @@ Runtime notes:
 - The server speaks **plain HTTP with Basic auth**. The Basic-auth password (the "bridge
   password") is also the key that decrypts the stored Proton session, so publish the
   port on `127.0.0.1` only and terminate TLS in a reverse proxy.
-- `protoxide auth <address>` needs a browser for Proton's human-verification step, so run
-  it on a workstation, then copy `auth.json` into the volume.
+- `protoxide auth <address>` needs a browser if Proton shows its human-verification step,
+  so run it on a workstation, then copy `auth.json` into the volume. It asks for the
+  account password and, for a 2FA account, optionally the **2FA secret key** (the base32
+  seed shown when 2FA was enabled; or set `PROTOXIDE_TOTP_SECRET` / `PROTOXIDE_TOTP_SECRET_FILE`).
+  Everything it stores goes into `auth.json`, encrypted with the bridge password it prints.
+  The seed is stored only after Proton accepted a code generated from it; with it the bridge
+  can log in again by itself, without it a person must type a code (`protoxide auth` again).
 
 ## Alerts
 
@@ -52,12 +57,6 @@ write failed, server stopped) are reported by `notify`. Sinks, each optional:
   `discordapp.com` only, path `/api/webhooks/<id>/<token>`), never followed through a
   redirect, and never written to logs. Messages cannot mention anyone, and are
   debounced to one per kind per 10 minutes.
-  With the Infisical backend it can instead live in the secret store as
-  `DISCORD_WEBHOOK_URL`; an environment webhook always wins. It is loaded into memory
-  at start and on every session load and re-login (and cleared if the secret is
-  removed), so an Infisical outage *after* start can still be reported. On a cold
-  start while Infisical is down nothing is known yet, so no alert can be sent: set the
-  environment variable too if you need alerts for that case.
 - **Apprise:** `PROTOXIDE_APPRISE_URL` (and `..._URLS`), as before.
 
 A misconfigured webhook sends nothing and logs why (without the URL).

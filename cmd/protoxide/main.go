@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -28,7 +27,6 @@ import (
 	"github.com/mathewcsims/protoxide/caldav"
 	"github.com/mathewcsims/protoxide/carddav"
 	"github.com/mathewcsims/protoxide/config"
-	"github.com/mathewcsims/protoxide/credstore"
 	"github.com/mathewcsims/protoxide/events"
 	"github.com/mathewcsims/protoxide/exports"
 	imapbackend "github.com/mathewcsims/protoxide/imap"
@@ -131,24 +129,11 @@ func resolveAppVersion(flagGiven bool, flagValue, env string) (string, error) {
 	return v, nil
 }
 
-// secretsBackend returns the external secret store selected by
-// PROTOXIDE_SECRETS_BACKEND, or nil for the default (secrets stay in auth.json).
-func secretsBackend() credstore.Provider {
-	p, err := credstore.FromEnv()
-	if err != nil {
-		log.Fatal(err)
-	}
-	return p
-}
-
-// forStorage drops the static passwords from c when they live in an external
-// secret store, so they never reach auth.json.
 // startVerification prepares the one-time CAPTCHA page and the control socket that
-// opens it, when the secrets backend is in use. Without the backend it returns nil
-// and nothing is served. The page is a 404 unless `protoxide verify` opened a window,
-// which in turn is refused unless a CAPTCHA is actually pending.
+// opens it. The page is a 404 unless `protoxide verify` opened a window, which in turn
+// is refused unless a CAPTCHA is actually pending.
 func startVerification(m *auth.Manager) http.Handler {
-	if secretsBackend() == nil {
+	if !m.ReloginEnabled() {
 		return nil
 	}
 	publicURL := strings.TrimRight(os.Getenv("PROTOXIDE_PUBLIC_URL"), "/")
@@ -165,55 +150,29 @@ func startVerification(m *auth.Manager) http.Handler {
 	return webverify.Handler(m)
 }
 
-// warnIfNoSecretsBackend makes the silent fallback audible: without a backend,
-// `auth` asks for the password and keeps it in auth.json. If Infisical settings are
-// present but the switch is not, the likely cause is a half-configured shell.
-func warnIfNoSecretsBackend() {
-	if secretsBackend() != nil {
-		return
-	}
-	var set []string
-	for _, kv := range os.Environ() {
-		if name, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, "PROTOXIDE_INFISICAL_") {
-			set = append(set, name)
+// localTOTPSeed returns the 2FA seed to store with the session: from
+// PROTOXIDE_TOTP_SECRET, or a file named by PROTOXIDE_TOTP_SECRET_FILE, else a hidden
+// prompt that may be left empty (then a one-time code is typed instead and nothing is
+// stored). The seed is kept only in the encrypted auth.json.
+func localTOTPSeed() string {
+	direct, file := os.Getenv("PROTOXIDE_TOTP_SECRET"), os.Getenv("PROTOXIDE_TOTP_SECRET_FILE")
+	switch {
+	case direct != "" && file != "":
+		log.Fatal("PROTOXIDE_TOTP_SECRET and PROTOXIDE_TOTP_SECRET_FILE are both set; use one")
+	case direct != "":
+		return strings.TrimSpace(direct)
+	case file != "":
+		b, err := os.ReadFile(file)
+		if err != nil {
+			log.Fatal("PROTOXIDE_TOTP_SECRET_FILE: could not read file")
 		}
+		return strings.TrimSpace(string(b))
 	}
-	if len(set) > 0 {
-		fmt.Printf("Warning: %s is not set to infisical, so the %d PROTOXIDE_INFISICAL_* variable(s) in your environment are being ignored.\n", credstore.BackendEnv, len(set))
-	}
-	fmt.Printf("Note: no secrets backend is active, so the password will be asked for here and stored (encrypted) in auth.json. To use Infisical, set %s=infisical and the PROTOXIDE_INFISICAL_* variables.\n", credstore.BackendEnv)
-}
-
-// storedSecrets reads whatever the configured secret store holds, or returns the
-// zero value when none is configured. A store that is configured but unreachable
-// is fatal rather than silently falling back to prompting.
-func storedSecrets() credstore.Secrets {
-	p := secretsBackend()
-	if p == nil {
-		return credstore.Secrets{}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	sec, err := p.Get(ctx)
+	b, err := askPass("2FA secret key (base32, hidden; optional - lets the bridge log in again by itself. Enter to type a one-time code instead)")
 	if err != nil {
 		log.Fatal(err)
 	}
-	return sec
-}
-
-func forStorage(c *auth.CachedAuth) *auth.CachedAuth {
-	if secretsBackend() != nil {
-		return c.WithoutSecrets()
-	}
-	return c
-}
-
-func printSecretsReminder() {
-	if secretsBackend() == nil {
-		return
-	}
-	fmt.Printf("Passwords were NOT saved locally. Make sure the secret store has %s, and %s (two-password accounts) / %s (2FA accounts) if they apply.\n",
-		credstore.NameLoginPassword, credstore.NameMailboxPassword, credstore.NameTOTPSecret)
+	return strings.TrimSpace(string(b))
 }
 
 func askPass(prompt string) ([]byte, error) {
@@ -512,26 +471,12 @@ func main() {
 	}
 
 	cmd := flag.Arg(0)
-	if b := os.Getenv(credstore.BackendEnv); b != "" && b != "local" {
-		switch cmd {
-		case "caldav", "auth", "import-session", "check-secrets", "verify":
-		default:
-			log.Fatalf("%s=%s is only supported by the caldav, auth, import-session, check-secrets and verify commands", credstore.BackendEnv, b)
-		}
-	}
 	switch cmd {
 	case "auth":
 		authCmd.Parse(flag.Args()[1:])
-		// With a secrets backend, whatever it holds is used and only the rest is
-		// asked for interactively.
-		stored := storedSecrets()
-		warnIfNoSecretsBackend()
 		username := authCmd.Arg(0)
 		if username == "" {
-			username = stored.Username
-		}
-		if username == "" {
-			log.Fatalf("usage: protoxide auth <username> (or set %s in the secret store)", credstore.NameUsername)
+			log.Fatal("usage: protoxide auth <username>")
 		}
 
 		c := newClient()
@@ -550,11 +495,9 @@ func main() {
 		}*/
 
 		var loginPassword string
+		var totpSeed string // stored with the session only after Proton accepted a code made from it
 		if a == nil {
-			if stored.LoginPassword != "" {
-				loginPassword = stored.LoginPassword
-				fmt.Println("Using the login password from the secret store.")
-			} else if pass, err := askPass("Password"); err != nil {
+			if pass, err := askPass("Password"); err != nil {
 				log.Fatal(err)
 			} else {
 				loginPassword = string(pass)
@@ -589,15 +532,16 @@ func main() {
 				}
 
 				answered := false
-				if stored.TOTPSecret != "" {
-					if code, cerr := totp.Code(stored.TOTPSecret, time.Now()); cerr != nil {
-						fmt.Printf("Could not use %s (%v); enter a code manually.\n", credstore.NameTOTPSecret, cerr)
+				if seed := localTOTPSeed(); seed != "" {
+					if code, cerr := totp.Code(seed, time.Now()); cerr != nil {
+						fmt.Printf("That is not a valid 2FA secret (%v); enter a code manually.\n", cerr)
 					} else if scope, aerr := c.AuthTOTP(code); aerr != nil {
-						fmt.Printf("The code generated from the secret store was rejected (%v); enter one manually.\n", aerr)
+						fmt.Printf("Proton rejected the code generated from that secret (%v), so it was not stored; check it and try again, or enter a code manually.\n", aerr)
 					} else {
-						fmt.Println("Answered the 2FA challenge with a code generated from the secret store.")
+						fmt.Println("Answered the 2FA challenge with a code generated from the secret; it will be stored (encrypted) so the bridge can log in again by itself.")
 						a.Scope = scope
 						answered = true
+						totpSeed = seed
 					}
 				}
 				if !answered {
@@ -618,10 +562,6 @@ func main() {
 		var mailboxPassword string
 		if a.PasswordMode == protonmail.PasswordSingle {
 			mailboxPassword = loginPassword
-		}
-		if mailboxPassword == "" && stored.MailboxPassword != "" {
-			mailboxPassword = stored.MailboxPassword
-			fmt.Println("Using the mailbox password from the secret store.")
 		}
 		if mailboxPassword == "" {
 			prompt := "Password"
@@ -651,30 +591,27 @@ func main() {
 		}
 
 		cookies, _ := jar.Export()
-		err = auth.EncryptAndSave(forStorage(&auth.CachedAuth{
+		err = auth.EncryptAndSave(&auth.CachedAuth{
 			Auth:            *a,
 			LoginPassword:   loginPassword,
 			MailboxPassword: mailboxPassword,
 			KeySalts:        keySalts,
+			TOTPSecret:      totpSeed,
 			Cookies:         cookies,
-		}), username, secretKey)
+		}, username, secretKey)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		fmt.Println("Bridge password:", bridgePassword)
-		printSecretsReminder()
+		fmt.Println("The password" + map[bool]string{true: ", the 2FA secret", false: ""}[totpSeed != ""] + " and the session are stored in auth.json, encrypted with the bridge password. Keep that safe: it is the only thing protecting them, and the server never stores it.")
 	case "import-session":
 		// Seed protoxide from a session that already exists in a logged-in Proton
 		// web tab, instead of performing a fresh login. Avoids the interactive
 		// login entirely by reusing credentials the browser already holds.
-		stored := storedSecrets()
 		username := flag.Arg(1)
 		if username == "" {
-			username = stored.Username
-		}
-		if username == "" {
-			log.Fatalf("usage: protoxide import-session <username> (or set %s in the secret store)", credstore.NameUsername)
+			log.Fatal("usage: protoxide import-session <username>")
 		}
 
 		c := newClient()
@@ -694,20 +631,11 @@ func main() {
 			log.Fatal("UID and access token are both required")
 		}
 
-		// A single-password account's mailbox password is its login password.
-		mailboxPassword := stored.MailboxPassword
-		if mailboxPassword == "" {
-			mailboxPassword = stored.LoginPassword
+		mailboxPass, err := askPass("Mailbox password")
+		if err != nil {
+			log.Fatal(err)
 		}
-		if mailboxPassword != "" {
-			fmt.Println("Using the mailbox password from the secret store.")
-		} else {
-			mailboxPass, err := askPass("Mailbox password")
-			if err != nil {
-				log.Fatal(err)
-			}
-			mailboxPassword = string(mailboxPass)
-		}
+		mailboxPassword := string(mailboxPass)
 
 		c.SetSession(uid, accessToken)
 
@@ -732,27 +660,18 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if err := auth.EncryptAndSave(forStorage(&auth.CachedAuth{
+		if err := auth.EncryptAndSave(&auth.CachedAuth{
 			Auth:            *a,
 			MailboxPassword: mailboxPassword,
 			KeySalts:        keySalts,
-		}), username, secretKey); err != nil {
+		}, username, secretKey); err != nil {
 			log.Fatal(err)
 		}
 
 		fmt.Println("Session imported. Bridge password:", bridgePassword)
-		printSecretsReminder()
 		if refreshToken == "" {
 			fmt.Println("Note: no refresh token provided — the session will stop working when the access token expires, and you'll need to import again.")
 		}
-	case "check-secrets":
-		// Connectivity/permission check for PROTOXIDE_SECRETS_BACKEND: logs in to the
-		// secret store and reports which secrets exist. Prints names only, no values,
-		// and never contacts Proton.
-		if secretsBackend() == nil {
-			log.Fatalf("set %s=infisical (and the PROTOXIDE_INFISICAL_* variables) first", credstore.BackendEnv)
-		}
-		fmt.Println(storedSecrets().Describe())
 	case "verify":
 		// Run inside the container (docker exec): asks the running bridge for a
 		// one-time link to the CAPTCHA page. Refused unless a CAPTCHA is pending.
@@ -912,24 +831,10 @@ func main() {
 		addr := *caldavHost + ":" + *caldavPort
 		caldav.Debug = debug
 		authManager := auth.NewManager(newClient)
-		if p := secretsBackend(); p != nil {
-			authManager.UseSecrets(p)
-			log.Printf("secrets: static Proton credentials come from %s, not auth.json", os.Getenv(credstore.BackendEnv))
-			// Load the alert webhook now so a later secret-store outage can still be
-			// reported. Not fatal: the first request and every re-login retry it.
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				sec, err := p.Get(ctx)
-				if err != nil {
-					log.Printf("secrets: could not preload the alert webhook: %v", err)
-					return
-				}
-				if err := notify.SetDiscordWebhook(sec.DiscordWebhookURL); err != nil {
-					log.Printf("notify: %v", err)
-				}
-			}()
-		}
+		// Unattended re-login from the credentials stored in auth.json: exponential
+		// backoff, a cap on logins, and a full stop (with an alert) when Proton demands
+		// a CAPTCHA, which `protoxide verify` then lets a person answer.
+		authManager.EnableRelogin()
 		eventsManager := events.NewManager()
 		verifyHandler := startVerification(authManager)
 		err := listenAndServeCalDAV(addr, authManager, eventsManager, tlsConfig, verifyHandler)

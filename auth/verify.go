@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mathewcsims/protoxide/credstore"
 	"github.com/mathewcsims/protoxide/protonmail"
 )
 
@@ -36,7 +35,7 @@ var (
 	// uninformative: callers answer 404 so nothing reveals that the route exists.
 	ErrNoWindow             = errors.New("no verification window is open")
 	ErrNotWaiting           = errors.New("the bridge is not waiting for human verification")
-	ErrNoSecretsBackend     = errors.New("web verification needs the secrets backend (PROTOXIDE_SECRETS_BACKEND)")
+	ErrReloginDisabled      = errors.New("web verification is only available while the caldav server runs")
 	ErrChallengeExpired     = errors.New("the verification challenge expired or was already used; reload the page")
 	ErrNoToken              = errors.New("could not find a verification token in what was pasted")
 	ErrWrongMessage         = errors.New("that is the proton_captcha line; the token needed is on the line whose type is pm_captcha (the second HV line)")
@@ -76,7 +75,7 @@ func randomToken(n int) (string, error) {
 // fails unless a CAPTCHA is actually pending. A previous window is replaced.
 func (m *Manager) OpenVerificationWindow() (token string, expires time.Time, err error) {
 	if m.rl == nil {
-		return "", time.Time{}, ErrNoSecretsBackend
+		return "", time.Time{}, ErrReloginDisabled
 	}
 	if m.rl.pendingHumanVerification() == nil {
 		return "", time.Time{}, ErrNotWaiting
@@ -120,7 +119,7 @@ func (m *Manager) windowMatches(token string) bool {
 // verification is counted against maxBegins.
 func (m *Manager) windowSession(token string, countBegin bool) (*session, error) {
 	if m.rl == nil {
-		return nil, ErrNoSecretsBackend
+		return nil, ErrReloginDisabled
 	}
 	m.wmu.Lock()
 	if !m.windowMatches(token) || (countBegin && m.win.begins >= maxBegins) {
@@ -158,9 +157,9 @@ func (m *Manager) BeginVerification(token string) (*Challenge, error) {
 	m.rl.mu.Lock()
 	defer m.rl.mu.Unlock()
 
-	sec, err := m.rl.fetch()
+	sec, err := credentials(&s.cached)
 	if err != nil {
-		return nil, fmt.Errorf("reading secrets: %w", err)
+		return nil, err
 	}
 	d := m.detach(s.c)
 	info, err := d.AuthInfo(s.username)
@@ -213,9 +212,9 @@ func (m *Manager) CompleteVerification(token, nonce, input string) error {
 	}
 	s.challenge = nil // single use
 
-	sec, err := m.rl.fetch()
+	sec, err := credentials(&s.cached)
 	if err != nil {
-		return fmt.Errorf("reading secrets: %w", err)
+		return err
 	}
 	d := m.detach(s.c)
 	d.SetHumanVerification(hv, hvMethod)
@@ -237,7 +236,7 @@ func (m *Manager) CompleteVerification(token, nonce, input string) error {
 
 // finishWebLogin turns an accepted login into a working session, exactly like the
 // unattended path, and closes the window. The caller holds s.mu and m.rl.mu.
-func (m *Manager) finishWebLogin(s *session, d authAPI, sec credstore.Secrets, auth *protonmail.Auth) error {
+func (m *Manager) finishWebLogin(s *session, d authAPI, sec secrets, auth *protonmail.Auth) error {
 	if err := m.rl.finishLogin(d, &s.cached, sec, auth, s.username); err != nil {
 		return err
 	}

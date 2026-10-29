@@ -61,45 +61,11 @@ var discordHosts = map[string]bool{
 	"discord.com": true, "canary.discord.com": true, "ptb.discord.com": true, "discordapp.com": true,
 }
 
-// storedHook is a webhook handed to us by the caller (read from the secret store),
-// already validated. It is only used when the environment names none.
-var (
-	hookMu     sync.RWMutex
-	storedHook string
-)
-
-// SetDiscordWebhook supplies a webhook obtained from the secret store. The
-// environment (PROTOXIDE_DISCORD_WEBHOOK_URL[_FILE]) always takes precedence. An
-// empty value clears it; an invalid one is rejected, cleared, and reported without
-// echoing the URL. Safe for concurrent use.
-func SetDiscordWebhook(raw string) error {
-	raw = strings.TrimSpace(raw)
-	if raw != "" {
-		if err := validateDiscordURL(raw); err != nil {
-			raw = ""
-			hookMu.Lock()
-			storedHook = ""
-			hookMu.Unlock()
-			return fmt.Errorf("Discord webhook from the secret store: %v", err)
-		}
-	}
-	hookMu.Lock()
-	storedHook = raw
-	hookMu.Unlock()
-	return nil
-}
-
-func storedDiscordHook() string {
-	hookMu.RLock()
-	defer hookMu.RUnlock()
-	return storedHook
-}
-
 func endpoint() string { return os.Getenv("PROTOXIDE_APPRISE_URL") }
 
 // Configured reports whether any alert sink is enabled.
 func Configured() bool {
-	return endpoint() != "" || os.Getenv(discordEnv) != "" || os.Getenv(discordEnv+"_FILE") != "" || storedDiscordHook() != ""
+	return endpoint() != "" || os.Getenv(discordEnv) != "" || os.Getenv(discordEnv+"_FILE") != ""
 }
 
 // scrub drops the request URL from a transport error: webhook URLs and Apprise
@@ -143,7 +109,7 @@ func discordURL() (string, error) {
 		return "", fmt.Errorf("%s and %s_FILE are both set; use one", discordEnv, discordEnv)
 	}
 	if direct == "" && file == "" {
-		return storedDiscordHook(), nil // already validated when it was set
+		return "", nil
 	}
 	raw := direct
 	if file != "" {

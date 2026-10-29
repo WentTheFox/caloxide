@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -9,8 +8,6 @@ import (
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 
-	"github.com/mathewcsims/protoxide/credstore"
-	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
 	"github.com/mathewcsims/protoxide/totp"
 )
@@ -20,17 +17,6 @@ const (
 	testMailbox = "MAILBOX-pw-xyz"
 	testSeed    = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" // RFC 6238 test seed
 )
-
-type fakeProvider struct {
-	sec   credstore.Secrets
-	err   error
-	calls int
-}
-
-func (p *fakeProvider) Get(context.Context) (credstore.Secrets, error) {
-	p.calls++
-	return p.sec, p.err
-}
 
 // fakeClock is advanced by sleep, so TOTP step handling can be tested instantly.
 type fakeClock struct {
@@ -129,22 +115,33 @@ func authWith(mode protonmail.PasswordMode, twoFA, totpMethod int) func() *proto
 	}
 }
 
-func newTest(p *fakeProvider) (*reloginer, *fakeClock) {
+func newTest() (*reloginer, *fakeClock) {
 	ck := &fakeClock{t: time.Unix(1_700_000_010, 0)}
-	r := newReloginer(p)
+	r := newReloginer()
 	r.now, r.sleep = ck.now, ck.sleep
 	return r, ck
 }
 
+// testSession is a decrypted session record as `protoxide auth` stores it: an expired
+// access token and the account's password. withSeed and withMailbox add the rest.
 func testSession() *CachedAuth {
-	return &CachedAuth{Auth: protonmail.Auth{UID: "u", AccessToken: "old", RefreshToken: "r", PasswordMode: protonmail.PasswordSingle}}
+	return &CachedAuth{
+		Auth:          protonmail.Auth{UID: "u", AccessToken: "old", RefreshToken: "r", PasswordMode: protonmail.PasswordSingle},
+		LoginPassword: testLogin,
+	}
+}
+
+func withSeed(c *CachedAuth) *CachedAuth    { c.TOTPSecret = testSeed; return c }
+func withMailbox(c *CachedAuth) *CachedAuth { c.MailboxPassword = testMailbox; return c }
+func withoutPassword(c *CachedAuth) *CachedAuth {
+	c.LoginPassword = ""
+	return c
 }
 
 func TestReloginWithTOTPSucceeds(t *testing.T) {
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin, TOTPSecret: testSeed}}
-	r, ck := newTest(p)
+	r, ck := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 1, 1)}
-	cached := testSession()
+	cached := withSeed(testSession())
 	want, _ := totp.Code(testSeed, ck.t)
 
 	keys, err := authenticate(api, cached, "me", r)
@@ -163,52 +160,49 @@ func TestReloginWithTOTPSucceeds(t *testing.T) {
 	if cached.Auth.RefreshToken != "rt2" || cached.Auth.Scope != "full" {
 		t.Errorf("session not updated: %+v", cached.Auth)
 	}
+	if cached.TOTPSecret != testSeed || cached.LoginPassword != testLogin {
+		t.Error("the stored credentials must survive a re-login (they are what the next one needs)")
+	}
 	if len(r.attempts) != 0 {
 		t.Error("a successful login must reset the breaker")
 	}
 }
 
-func TestTwoPasswordAccountNeedsMailboxPassword(t *testing.T) {
+func TestTwoPasswordAccountNeedsItsMailboxPassword(t *testing.T) {
+	r, _ := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordTwo, 0, 0)}
-
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin, MailboxPassword: testMailbox}}
-	r, _ := newTest(p)
-	if _, err := authenticate(api, testSession(), "me", r); err != nil {
+	if _, err := authenticate(api, withMailbox(testSession()), "me", r); err != nil {
 		t.Fatal(err)
 	}
 	if got := api.unlockPass[len(api.unlockPass)-1]; got != testMailbox {
 		t.Errorf("unlock used %q, want the mailbox password", got)
 	}
 
-	p2 := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin}}
-	r2, _ := newTest(p2)
+	r2, _ := newTest()
 	_, err := authenticate(&fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordTwo, 0, 0)}, testSession(), "me", r2)
-	if err == nil || !strings.Contains(err.Error(), credstore.NameMailboxPassword) {
-		t.Errorf("want an error naming %s, got %v", credstore.NameMailboxPassword, err)
+	if err == nil || !strings.Contains(err.Error(), "mailbox password") || !strings.Contains(err.Error(), "protoxide auth") {
+		t.Errorf("want guidance about the missing mailbox password, got %v", err)
 	}
 }
 
 func TestTwoFactorWithoutSeedOrWithU2F(t *testing.T) {
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin}}
-	r, _ := newTest(p)
+	r, _ := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 1, 1)}
-	_, err := authenticate(api, testSession(), "me", r)
-	if err == nil || !strings.Contains(err.Error(), credstore.NameTOTPSecret) || len(api.totpCodes) != 0 {
+	_, err := authenticate(api, testSession(), "me", r) // no seed stored
+	if err == nil || !strings.Contains(err.Error(), "2FA seed") || !strings.Contains(err.Error(), "protoxide auth") || len(api.totpCodes) != 0 {
 		t.Errorf("no seed: err=%v codes=%v", err, api.totpCodes)
 	}
 
-	p2 := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin, TOTPSecret: testSeed}}
-	r2, _ := newTest(p2)
+	r2, _ := newTest()
 	api2 := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 1, 0)} // not TOTP
-	_, err = authenticate(api2, testSession(), "me", r2)
+	_, err = authenticate(api2, withSeed(testSession()), "me", r2)
 	if err == nil || !strings.Contains(err.Error(), "only TOTP") || len(api2.totpCodes) != 0 {
 		t.Errorf("non-TOTP 2FA: err=%v codes=%v", err, api2.totpCodes)
 	}
 }
 
 func TestBreakerOpensAfterThreeFailedLogins(t *testing.T) {
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin}}
-	r, ck := newTest(p)
+	r, ck := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), authErr: &protonmail.APIError{Code: 8002, Message: "wrong password"}}
 
 	for i := 0; i < maxAttempts; i++ {
@@ -240,12 +234,12 @@ func TestBreakerOpensAfterThreeFailedLogins(t *testing.T) {
 }
 
 func TestBackoffGrowsExponentiallyAndRecoveryResetsIt(t *testing.T) {
-	p := &fakeProvider{err: errors.New("infisical login: unexpected HTTP status 503")}
-	r, ck := newTest(p)
+	r, ck := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
 
 	for n := 1; n <= 8; n++ {
-		if _, err := authenticate(api, testSession(), "me", r); err == nil {
+		// A record with no stored password fails before Proton is contacted for a login.
+		if _, err := authenticate(api, withoutPassword(testSession()), "me", r); err == nil {
 			t.Fatalf("failure %d: expected an error", n)
 		}
 		delay := r.nextAttempt.Sub(ck.t)
@@ -257,20 +251,19 @@ func TestBackoffGrowsExponentiallyAndRecoveryResetsIt(t *testing.T) {
 			t.Fatalf("failure %d: delay %v, want about %v (+/-20%%, max %v)", n, delay, want, reloginBackoffMax)
 		}
 
-		// During the delay nothing is contacted: not Proton, not the secret store.
-		calls, refreshes := p.calls, api.refreshCalls
+		// During the delay nothing is contacted.
+		refreshes := api.refreshCalls
 		ck.t = ck.t.Add(delay / 2)
 		var sus *SuspendedError
 		if _, err := authenticate(api, testSession(), "me", r); !errors.As(err, &sus) {
 			t.Fatalf("failure %d: want a SuspendedError during backoff, got %v", n, err)
 		}
-		if p.calls != calls || api.refreshCalls != refreshes {
-			t.Fatalf("failure %d: backoff still contacted the secret store or Proton", n)
+		if api.refreshCalls != refreshes {
+			t.Fatalf("failure %d: backoff still contacted Proton", n)
 		}
 		ck.t = r.nextAttempt.Add(time.Second)
 	}
 
-	p.err, p.sec = nil, credstore.Secrets{LoginPassword: testLogin}
 	if _, err := authenticate(api, testSession(), "me", r); err != nil {
 		t.Fatalf("recovery: %v", err)
 	}
@@ -279,49 +272,8 @@ func TestBackoffGrowsExponentiallyAndRecoveryResetsIt(t *testing.T) {
 	}
 }
 
-func TestCaptchaLatchesUntilRestartWithoutContactingProton(t *testing.T) {
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin}}
-	r, ck := newTest(p)
-	api := &fakeAPI{refreshErr: deadRefresh(), authErr: &protonmail.APIError{Code: 9001, Message: "captcha"}}
-
-	_, err := authenticate(api, testSession(), "me", r)
-	var hv *HumanVerificationError
-	if !errors.As(err, &hv) || !strings.Contains(err.Error(), "protoxide auth me") || !strings.Contains(err.Error(), "restart") {
-		t.Fatalf("want guidance to run auth and restart, got %v", err)
-	}
-	if !errors.As(r.blocked(), &hv) {
-		t.Fatal("the gate must report the pending CAPTCHA")
-	}
-
-	calls := *api
-	providerCalls := p.calls
-	for _, wait := range []time.Duration{time.Minute, time.Hour, 48 * time.Hour} {
-		ck.t = ck.t.Add(wait)
-		if _, err := authenticate(api, testSession(), "me", r); !errors.As(err, &hv) {
-			t.Fatalf("after %v: still must be blocked on the CAPTCHA, got %v", wait, err)
-		}
-	}
-	if api.refreshCalls != calls.refreshCalls || api.infoCalls != calls.infoCalls || api.authCalls != calls.authCalls || p.calls != providerCalls {
-		t.Error("a pending CAPTCHA must stop every Proton and secret-store request")
-	}
-
-	// A restart is a new process, and so a new reloginer.
-	fresh, _ := newTest(p)
-	if fresh.blocked() != nil {
-		t.Error("a restarted bridge must try again")
-	}
-}
-
-func TestGateIsOpenWhenNothingHasFailed(t *testing.T) {
-	r, _ := newTest(&fakeProvider{})
-	if err := r.blocked(); err != nil {
-		t.Errorf("fresh reloginer is blocked: %v", err)
-	}
-}
-
 func TestHumanVerificationIsReportedAndCounted(t *testing.T) {
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin}}
-	r, _ := newTest(p)
+	r, _ := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), authErr: &protonmail.APIError{Code: 9001, Message: "captcha"}}
 	_, err := authenticate(api, testSession(), "me", r)
 	if err == nil || !strings.Contains(err.Error(), "human verification") || !strings.Contains(err.Error(), "protoxide auth me") {
@@ -332,18 +284,55 @@ func TestHumanVerificationIsReportedAndCounted(t *testing.T) {
 	}
 }
 
+func TestCaptchaLatchesUntilRestartWithoutContactingProton(t *testing.T) {
+	r, ck := newTest()
+	api := &fakeAPI{refreshErr: deadRefresh(), authErr: &protonmail.APIError{Code: 9001, Message: "captcha"}}
+
+	_, err := authenticate(api, testSession(), "me", r)
+	var hv *HumanVerificationError
+	if !errors.As(err, &hv) || !strings.Contains(err.Error(), "protoxide auth me") || !strings.Contains(err.Error(), "protoxide verify") {
+		t.Fatalf("want guidance to verify or re-auth, got %v", err)
+	}
+	if !errors.As(r.blocked(), &hv) {
+		t.Fatal("the gate must report the pending CAPTCHA")
+	}
+
+	calls := *api
+	for _, wait := range []time.Duration{time.Minute, time.Hour, 48 * time.Hour} {
+		ck.t = ck.t.Add(wait)
+		if _, err := authenticate(api, testSession(), "me", r); !errors.As(err, &hv) {
+			t.Fatalf("after %v: still must be blocked on the CAPTCHA, got %v", wait, err)
+		}
+	}
+	if api.refreshCalls != calls.refreshCalls || api.infoCalls != calls.infoCalls || api.authCalls != calls.authCalls {
+		t.Error("a pending CAPTCHA must stop every Proton request")
+	}
+
+	// A restart is a new process, and so a new reloginer.
+	fresh, _ := newTest()
+	if fresh.blocked() != nil {
+		t.Error("a restarted bridge must try again")
+	}
+}
+
+func TestGateIsOpenWhenNothingHasFailed(t *testing.T) {
+	r, _ := newTest()
+	if err := r.blocked(); err != nil {
+		t.Errorf("fresh reloginer is blocked: %v", err)
+	}
+}
+
 func TestTOTPCodeIsNotReusedWithinOneStep(t *testing.T) {
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin, TOTPSecret: testSeed}}
-	r, ck := newTest(p)
+	r, ck := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 1, 1)}
 
-	if _, err := authenticate(api, testSession(), "me", r); err != nil {
+	if _, err := authenticate(api, withSeed(testSession()), "me", r); err != nil {
 		t.Fatal(err)
 	}
 	if len(ck.slept) != 0 {
 		t.Fatalf("first login must not wait, slept %v", ck.slept)
 	}
-	if _, err := authenticate(api, testSession(), "me", r); err != nil { // same 30 s step
+	if _, err := authenticate(api, withSeed(testSession()), "me", r); err != nil { // same 30 s step
 		t.Fatal(err)
 	}
 	if len(ck.slept) != 1 || ck.slept[0] < stepMargin {
@@ -354,74 +343,40 @@ func TestTOTPCodeIsNotReusedWithinOneStep(t *testing.T) {
 	}
 }
 
-func TestSecretStoreFailureDoesNotTouchProtonOrBreaker(t *testing.T) {
-	p := &fakeProvider{err: errors.New("infisical login: unexpected HTTP status 403")}
-	r, _ := newTest(p)
+func TestMissingPasswordNeverReachesProtonAndSaysWhatToDo(t *testing.T) {
+	r, _ := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
-	_, err := authenticate(api, testSession(), "me", r)
-	if err == nil || !strings.Contains(err.Error(), "reading secrets") {
-		t.Fatalf("want a 'reading secrets' error, got %v", err)
+	_, err := authenticate(api, withoutPassword(testSession()), "me", r)
+	if err == nil || !strings.Contains(err.Error(), "no password is stored") || !strings.Contains(err.Error(), "protoxide auth") {
+		t.Fatalf("want guidance to run protoxide auth, got %v", err)
 	}
-	if api.authCalls != 0 || len(r.attempts) != 0 {
-		t.Error("a secret-store outage must not count as a login attempt or reach Proton")
-	}
-}
-
-func TestHealthySessionNeverContactsTheSecretStore(t *testing.T) {
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin}}
-	r, _ := newTest(p)
-	cached := testSession()
-	cached.MailboxPassword = "already-in-memory"
-	api := &fakeAPI{storedValid: true}
-	if _, err := authenticate(api, cached, "me", r); err != nil {
-		t.Fatal(err)
-	}
-	if p.calls != 0 {
-		t.Errorf("secret store contacted %d times for a healthy session", p.calls)
-	}
-}
-
-func TestPopulateLoadsSecretsIntoMemoryOnly(t *testing.T) {
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin, MailboxPassword: testMailbox}}
-	r, _ := newTest(p)
-	cached := testSession()
-	cached.Auth.PasswordMode = protonmail.PasswordTwo
-	if err := r.populate(cached); err != nil {
-		t.Fatal(err)
-	}
-	if cached.LoginPassword != testLogin || cached.MailboxPassword != testMailbox {
-		t.Errorf("populate: %+v", cached)
-	}
-	p.err = errors.New("down")
-	if err := r.populate(testSession()); err == nil {
-		t.Error("populate must fail when the secret store is unreachable")
+	if api.authCalls != 0 || api.infoCalls != 0 || len(r.attempts) != 0 {
+		t.Error("with nothing to log in with, Proton must not be contacted or the breaker charged")
 	}
 }
 
 func TestLegacyModeUnchanged(t *testing.T) {
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 1, 1)}
 	cached := testSession()
-	cached.LoginPassword = "x"
 	_, err := authenticate(api, cached, "me", nil)
 	if err == nil || !strings.Contains(err.Error(), "two factor authentication enabled, please login again manually") {
-		t.Errorf("2FA without a secrets backend must still ask for a human, got %v", err)
+		t.Errorf("without unattended re-login, 2FA must still ask for a human, got %v", err)
 	}
-	_, err = authenticate(&fakeAPI{refreshErr: deadRefresh()}, testSession(), "me", nil)
+	_, err = authenticate(&fakeAPI{refreshErr: deadRefresh()}, withoutPassword(testSession()), "me", nil)
 	if err == nil || !strings.Contains(err.Error(), "no password is stored") {
 		t.Errorf("empty stored password: %v", err)
 	}
 }
 
-func TestErrorsNeverContainSecretValues(t *testing.T) {
-	sec := credstore.Secrets{LoginPassword: testLogin, MailboxPassword: testMailbox, TOTPSecret: testSeed}
+func TestErrorsNeverContainStoredSecrets(t *testing.T) {
 	scenarios := map[string]*fakeAPI{
 		"wrong password": {refreshErr: deadRefresh(), authErr: &protonmail.APIError{Code: 8002, Message: "bad"}},
 		"hv":             {refreshErr: deadRefresh(), authErr: &protonmail.APIError{Code: 9001}},
 		"totp rejected":  {refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 1, 1), totpErr: errors.New("bad code")},
 	}
 	for name, api := range scenarios {
-		r, _ := newTest(&fakeProvider{sec: sec})
-		_, err := authenticate(api, testSession(), "me", r)
+		r, _ := newTest()
+		_, err := authenticate(api, withMailbox(withSeed(testSession())), "me", r)
 		if err == nil {
 			t.Fatalf("%s: expected an error", name)
 		}
@@ -433,67 +388,15 @@ func TestErrorsNeverContainSecretValues(t *testing.T) {
 	}
 }
 
-func TestFetchPublishesTheAlertWebhook(t *testing.T) {
-	t.Setenv("PROTOXIDE_APPRISE_URL", "")
-	t.Setenv("PROTOXIDE_DISCORD_WEBHOOK_URL", "")
-	t.Setenv("PROTOXIDE_DISCORD_WEBHOOK_URL_FILE", "")
-	t.Cleanup(func() { notify.SetDiscordWebhook("") })
-	if notify.Configured() {
-		t.Fatal("precondition: nothing configured")
-	}
-
-	// Published even when the fetch then fails on a missing password, so that very
-	// problem can be alerted.
-	p := &fakeProvider{sec: credstore.Secrets{DiscordWebhookURL: "https://discord.com/api/webhooks/1/tok"}}
-	r, _ := newTest(p)
-	if err := r.populate(testSession()); err == nil {
-		t.Fatal("expected the missing-password error")
-	}
-	if !notify.Configured() {
-		t.Error("the webhook from the secret store was not published to notify")
-	}
-
-	// A later fetch without it clears it again.
-	p.sec = credstore.Secrets{LoginPassword: testLogin}
-	if err := r.populate(testSession()); err != nil {
-		t.Fatal(err)
-	}
-	if notify.Configured() {
-		t.Error("removing the secret must clear the stored webhook")
-	}
-}
-
-func TestMissingLoginPasswordIsReportedByName(t *testing.T) {
-	// Optional at the store level, but a re-login and a session start both need it.
-	p := &fakeProvider{sec: credstore.Secrets{TOTPSecret: testSeed}}
-	r, _ := newTest(p)
-	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
-	_, err := authenticate(api, testSession(), "me", r)
-	if err == nil || !strings.Contains(err.Error(), credstore.NameLoginPassword) {
-		t.Errorf("re-login: want an error naming %s, got %v", credstore.NameLoginPassword, err)
-	}
-	if api.authCalls != 0 {
-		t.Error("must not contact Proton without a password")
-	}
-	if err := r.populate(testSession()); err == nil || !strings.Contains(err.Error(), credstore.NameLoginPassword) {
-		t.Errorf("populate: want an error naming %s, got %v", credstore.NameLoginPassword, err)
-	}
-}
-
-// The first real run failed here: the stale token was still attached when the
-// re-login asked for /auth/info. Covers both the secrets backend and the legacy path.
 func TestReloginSendsNoStaleCredentials(t *testing.T) {
-	p := &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin}}
-	r, _ := newTest(p)
+	r, _ := newTest()
 	api := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
 	if _, err := authenticate(api, testSession(), "me", r); err != nil {
-		t.Fatalf("secrets-backend re-login with a revoked session: %v", err)
+		t.Fatalf("re-login with a revoked session: %v", err)
 	}
 
 	legacy := &fakeAPI{refreshErr: deadRefresh(), loginAuth: authWith(protonmail.PasswordSingle, 0, 0)}
-	cached := testSession()
-	cached.LoginPassword = testLogin
-	if _, err := authenticate(legacy, cached, "me", nil); err != nil {
+	if _, err := authenticate(legacy, testSession(), "me", nil); err != nil {
 		t.Fatalf("legacy re-login with a revoked session: %v", err)
 	}
 }

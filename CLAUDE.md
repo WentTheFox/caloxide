@@ -3,7 +3,7 @@
 Pinned, audited fork of a Proton Calendar CalDAV bridge. It holds a live Proton
 session and calendar plaintext, so the code that runs here is deliberately boring and
 reviewed. Read `FORK.md` for the policy. For anything touching `auth/`, `notify/`,
-credentials or secret storage, read `docs/design/unattended-reauth.md` first.
+credentials or session storage, read `docs/design/unattended-reauth.md` first.
 
 ## Rules
 

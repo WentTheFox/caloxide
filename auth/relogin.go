@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -11,7 +10,6 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 
 	"github.com/mathewcsims/protoxide/backoff"
-	"github.com/mathewcsims/protoxide/credstore"
 	"github.com/mathewcsims/protoxide/notify"
 	"github.com/mathewcsims/protoxide/protonmail"
 	"github.com/mathewcsims/protoxide/totp"
@@ -53,7 +51,6 @@ const (
 	reloginBackoffBase = 30 * time.Second // then 1m, 2m, 4m ... up to the max
 	reloginBackoffMax  = 30 * time.Minute
 
-	secretsTimeout = 30 * time.Second
 	// A code is single-use inside its 30 s step; wait this long past the step
 	// boundary so clock skew cannot land us in the old step.
 	stepMargin = 500 * time.Millisecond
@@ -80,12 +77,27 @@ func (e *HumanVerificationError) Error() string {
 	return fmt.Sprintf("Proton wants human verification, which cannot be done unattended; run `protoxide verify` inside the container for a one-time link, or `protoxide auth %s` on a workstation and restart the bridge", e.Username)
 }
 
-// reloginer logs in to Proton again, unattended, using secrets from an external
-// store. It is only created when a secrets backend is configured; without one the
-// legacy behaviour (cached password, no 2FA) is unchanged.
-type reloginer struct {
-	provider credstore.Provider
+// secrets are the static credentials a login needs. They come from the decrypted
+// session record (auth.json), where `protoxide auth` stored them; nothing else is read.
+type secrets struct {
+	LoginPassword   string
+	MailboxPassword string
+	TOTPSecret      string
+}
 
+// credentials reads what a login needs from the decrypted session record.
+func credentials(cached *CachedAuth) (secrets, error) {
+	if cached.LoginPassword == "" {
+		return secrets{}, errors.New("no password is stored; run `protoxide auth` again")
+	}
+	return secrets{LoginPassword: cached.LoginPassword, MailboxPassword: cached.MailboxPassword, TOTPSecret: cached.TOTPSecret}, nil
+}
+
+// reloginer logs in to Proton again, unattended, using the credentials stored in the
+// session record. It answers a TOTP challenge from the stored seed, backs off
+// exponentially after failures, caps the logins it submits, and stops entirely when
+// Proton demands a CAPTCHA (a human must answer that).
+type reloginer struct {
 	now   func() time.Time
 	sleep func(time.Duration)
 	bo    *backoff.Backoff
@@ -100,9 +112,8 @@ type reloginer struct {
 	lastStep int64 // TOTP step last submitted, -1 if none; only touched under mu
 }
 
-func newReloginer(p credstore.Provider) *reloginer {
+func newReloginer() *reloginer {
 	return &reloginer{
-		provider: p,
 		now:      time.Now,
 		sleep:    time.Sleep,
 		bo:       backoff.New(reloginBackoffBase, reloginBackoffMax),
@@ -110,47 +121,18 @@ func newReloginer(p credstore.Provider) *reloginer {
 	}
 }
 
-func (r *reloginer) fetch() (credstore.Secrets, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), secretsTimeout)
-	defer cancel()
-	sec, err := r.provider.Get(ctx)
-	if err != nil {
-		return credstore.Secrets{}, err
-	}
-	// Hand the alert webhook over first, so even a problem found below (such as a
-	// missing password) can be reported.
-	if err := notify.SetDiscordWebhook(sec.DiscordWebhookURL); err != nil {
-		log.Printf("notify: %v", err)
-	}
-	if sec.LoginPassword == "" {
-		return credstore.Secrets{}, errors.New(credstore.NameLoginPassword + " is not set in the secret store")
-	}
-	return sec, nil
-}
-
-// apply copies the secrets into the in-memory session. The mailbox password is the
-// login password for single-password accounts. Nothing here is ever persisted.
-func apply(cached *CachedAuth, sec credstore.Secrets, mode protonmail.PasswordMode) error {
-	cached.LoginPassword = sec.LoginPassword
+// syncMailbox settles the mailbox password for the account type: a single-password
+// account unlocks its keys with the login password, a two-password account needs the
+// separate mailbox password that was stored at login.
+func syncMailbox(cached *CachedAuth, mode protonmail.PasswordMode) error {
 	if mode == protonmail.PasswordTwo {
-		if sec.MailboxPassword == "" {
-			return errors.New("this is a two-password account but " + credstore.NameMailboxPassword + " is not set in the secret store")
+		if cached.MailboxPassword == "" {
+			return errors.New("this is a two-password account but no mailbox password is stored; run `protoxide auth` again")
 		}
-		cached.MailboxPassword = sec.MailboxPassword
-	} else {
-		cached.MailboxPassword = sec.LoginPassword
+		return nil
 	}
+	cached.MailboxPassword = cached.LoginPassword
 	return nil
-}
-
-// populate loads the secrets into a freshly decrypted session (first request
-// after a start). The store is not contacted again until a re-login is needed.
-func (r *reloginer) populate(cached *CachedAuth) error {
-	sec, err := r.fetch()
-	if err != nil {
-		return fmt.Errorf("reading secrets from the secret store: %w", err)
-	}
-	return apply(cached, sec, cached.Auth.PasswordMode)
 }
 
 // blocked reports whether unattended re-authentication is currently off limits:
@@ -190,9 +172,9 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 		return nil, err
 	}
 
-	sec, err := r.fetch()
+	sec, err := credentials(cached)
 	if err != nil {
-		return nil, r.fail(username, "relogin-secrets", fmt.Errorf("cannot re-authenticate: reading secrets: %w", err))
+		return nil, r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: %w", err))
 	}
 
 	info, err := c.AuthInfo(username)
@@ -204,7 +186,7 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 	r.attempts = append(r.attempts, r.now()) // counted before the login, whatever its outcome
 	n := len(r.attempts)
 	r.st.Unlock()
-	log.Printf("auth: Proton session expired; logging in again with credentials from the secret store (attempt %d of %d allowed per %s)", n, maxAttempts, window)
+	log.Printf("auth: Proton session expired; logging in again with the stored credentials (attempt %d of %d allowed per %s)", n, maxAttempts, window)
 
 	auth, err := c.Auth(username, sec.LoginPassword, info)
 	if err != nil {
@@ -224,13 +206,13 @@ func (r *reloginer) reauth(c protonAPI, cached *CachedAuth, username string) (*p
 // finishLogin completes a login Proton accepted: it answers a TOTP challenge if one
 // is pending, loads the secrets into the in-memory session, and records the success
 // (which clears the backoff, the cap and any CAPTCHA latch). The caller holds r.mu.
-func (r *reloginer) finishLogin(c protonAPI, cached *CachedAuth, sec credstore.Secrets, auth *protonmail.Auth, username string) error {
+func (r *reloginer) finishLogin(c protonAPI, cached *CachedAuth, sec secrets, auth *protonmail.Auth, username string) error {
 	if auth.TwoFactor.Enabled != 0 {
 		if auth.TwoFactor.TOTP != 1 {
 			return r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: only TOTP is supported as a 2FA method; run `protoxide auth`"))
 		}
 		if sec.TOTPSecret == "" {
-			return r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: 2FA is enabled but "+credstore.NameTOTPSecret+" is not set in the secret store"))
+			return r.fail(username, "relogin-failed", errors.New("cannot re-authenticate: 2FA is enabled but no 2FA seed is stored; run `protoxide auth` and enter it"))
 		}
 		scope, err := r.answerTOTP(c, sec.TOTPSecret)
 		if err != nil {
@@ -239,7 +221,7 @@ func (r *reloginer) finishLogin(c protonAPI, cached *CachedAuth, sec credstore.S
 		auth.Scope = scope
 	}
 
-	if err := apply(cached, sec, auth.PasswordMode); err != nil {
+	if err := syncMailbox(cached, auth.PasswordMode); err != nil {
 		return r.fail(username, "relogin-failed", fmt.Errorf("cannot re-authenticate: %w", err))
 	}
 
@@ -318,7 +300,7 @@ func (r *reloginer) latchHumanVerification(username string) error {
 
 // fail logs and alerts (debounced by key), schedules the next attempt with
 // exponential backoff, and returns err unchanged. Errors reaching here carry no
-// secret values: credstore and totp scrub theirs, and Proton API errors contain
+// secret values: totp scrubs its errors, and Proton API errors contain
 // only the API's own message.
 func (r *reloginer) fail(username, key string, err error) error {
 	wait := r.bo.Next()

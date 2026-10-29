@@ -1,14 +1,12 @@
 package auth
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
-	"github.com/mathewcsims/protoxide/config"
 	"github.com/mathewcsims/protoxide/protonmail"
 )
 
@@ -65,66 +63,5 @@ func TestExpiredAccessTokenRefreshesOnceWithoutRecursion(t *testing.T) {
 	}
 	if cached.Auth.AccessToken != "new" || cached.Auth.RefreshToken != "r2" {
 		t.Errorf("tokens were not rotated: %+v", cached.Auth)
-	}
-}
-
-func TestWithoutSecretsKeepsTokensOnly(t *testing.T) {
-	c := &CachedAuth{
-		Auth:          protonmail.Auth{UID: "u", AccessToken: "a", RefreshToken: "r"},
-		LoginPassword: "LOGIN", MailboxPassword: "MAILBOX", KeySalts: map[string][]byte{"k": {1}},
-	}
-	got := c.WithoutSecrets()
-	if got.LoginPassword != "" || got.MailboxPassword != "" {
-		t.Errorf("passwords survived: %+v", got)
-	}
-	if got.Auth.RefreshToken != "r" || len(got.KeySalts) != 1 {
-		t.Errorf("tokens/salts lost: %+v", got)
-	}
-	if c.LoginPassword != "LOGIN" {
-		t.Error("WithoutSecrets modified the original")
-	}
-}
-
-func TestManagerSaveRedactsOnlyWhenSecretsBackendIsOn(t *testing.T) {
-	config.SetConfigHome(t.TempDir())
-	var key [32]byte
-	key[0] = 7
-	cached := &CachedAuth{Auth: protonmail.Auth{RefreshToken: "r"}, LoginPassword: "LOGIN", MailboxPassword: "MAILBOX"}
-
-	load := func(user string) CachedAuth {
-		t.Helper()
-		auths, err := readCachedAuths()
-		if err != nil {
-			t.Fatal(err)
-		}
-		plain, err := decrypt(auths[user], &key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var out CachedAuth
-		if err := json.Unmarshal(plain, &out); err != nil {
-			t.Fatal(err)
-		}
-		return out
-	}
-
-	local := NewManager(func() *protonmail.Client { return &protonmail.Client{} })
-	if err := local.save(cached, "local", &key); err != nil {
-		t.Fatal(err)
-	}
-	if got := load("local"); got.LoginPassword != "LOGIN" || got.MailboxPassword != "MAILBOX" {
-		t.Errorf("default backend must keep today's behaviour, got %+v", got)
-	}
-
-	ext := NewManager(func() *protonmail.Client { return &protonmail.Client{} })
-	ext.UseSecrets(&fakeProvider{})
-	if err := ext.save(cached, "ext", &key); err != nil {
-		t.Fatal(err)
-	}
-	if got := load("ext"); got.LoginPassword != "" || got.MailboxPassword != "" || got.Auth.RefreshToken != "r" {
-		t.Errorf("secrets backend must keep passwords off disk but keep tokens, got %+v", got)
-	}
-	if cached.LoginPassword != "LOGIN" {
-		t.Error("save modified the in-memory session")
 	}
 }

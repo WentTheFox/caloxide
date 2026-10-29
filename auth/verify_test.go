@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/mathewcsims/protoxide/config"
-	"github.com/mathewcsims/protoxide/credstore"
 	"github.com/mathewcsims/protoxide/protonmail"
 )
 
@@ -17,7 +16,6 @@ const solved = "SolvedCaptchaToken-0123456789abcdef-xyz"
 type verifyEnv struct {
 	m       *Manager
 	api     *fakeAPI
-	prov    *fakeProvider
 	ck      *fakeClock
 	pw      string // the bridge password
 	adopted int
@@ -31,12 +29,11 @@ func newVerifyEnv(t *testing.T) *verifyEnv {
 	var key [32]byte
 	key[0] = 7
 	e := &verifyEnv{pw: base64.StdEncoding.EncodeToString(key[:])}
-	stored := &CachedAuth{Auth: protonmail.Auth{UID: "u", AccessToken: "old", RefreshToken: "r", PasswordMode: protonmail.PasswordSingle}}
+	stored := withSeed(testSession()) // the record `protoxide auth` wrote: password and 2FA seed
 	if err := EncryptAndSave(stored, "me", &key); err != nil {
 		t.Fatal(err)
 	}
 
-	e.prov = &fakeProvider{sec: credstore.Secrets{LoginPassword: testLogin, TOTPSecret: testSeed}}
 	e.api = &fakeAPI{
 		requireHV: true,
 		hvDetails: &protonmail.HumanVerificationDetails{HumanVerificationMethods: []string{"captcha"}, HumanVerificationToken: "ProtonChallengeToken"},
@@ -44,7 +41,7 @@ func newVerifyEnv(t *testing.T) *verifyEnv {
 	}
 	e.ck = &fakeClock{t: time.Now()}
 	e.m = NewManager(func() *protonmail.Client { return &protonmail.Client{} })
-	e.m.UseSecrets(e.prov)
+	e.m.EnableRelogin()
 	e.m.detach = func(*protonmail.Client) authAPI { return e.api }
 	e.m.adopt = func(*protonmail.Client, authAPI) { e.adopted++ }
 	e.m.now = e.ck.now
@@ -81,8 +78,8 @@ func TestWindowOnlyOpensWhileACaptchaIsPending(t *testing.T) {
 	}
 
 	plain := NewManager(func() *protonmail.Client { return &protonmail.Client{} })
-	if _, _, err := plain.OpenVerificationWindow(); !errors.Is(err, ErrNoSecretsBackend) {
-		t.Errorf("without the secrets backend: %v", err)
+	if _, _, err := plain.OpenVerificationWindow(); !errors.Is(err, ErrReloginDisabled) {
+		t.Errorf("without unattended re-login: %v", err)
 	}
 }
 
@@ -168,16 +165,23 @@ func TestWebVerificationEndToEnd(t *testing.T) {
 		t.Errorf("the new session was adopted %d times, want 1", e.adopted)
 	}
 
-	// The refreshed tokens reached disk (encrypted), without the passwords.
+	// The refreshed tokens reached disk, and the file stays encrypted: the password and
+	// the 2FA seed are in the record (that is how the next re-login finds them) but
+	// readable only with the bridge password.
 	var key [32]byte
 	key[0] = 7
 	auths, _ := readCachedAuths()
+	if strings.Contains(auths["me"], testLogin) || strings.Contains(auths["me"], testSeed) {
+		t.Error("auth.json holds the password or the 2FA seed in the clear")
+	}
 	plain, err := decrypt(auths["me"], &key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(plain), "rt2") || strings.Contains(string(plain), testLogin) {
-		t.Errorf("stored session wrong: %s", plain)
+	for _, want := range []string{"rt2", testLogin, testSeed} {
+		if !strings.Contains(string(plain), want) {
+			t.Errorf("the stored record lost %q: %s", want, plain)
+		}
 	}
 
 	// And the next CalDAV request needs no further login.
@@ -242,14 +246,13 @@ func TestBeginWithoutCaptchaJustLogsIn(t *testing.T) {
 func TestWhileLatchedAuthFailsFastWithoutNetwork(t *testing.T) {
 	e := newVerifyEnv(t)
 	before := *e.api
-	providerCalls := e.prov.calls
 	_, _, err := e.m.Auth("me", e.pw)
 	var hv *HumanVerificationError
 	if !errors.As(err, &hv) {
 		t.Fatalf("want the CAPTCHA error, got %v", err)
 	}
-	if e.api.refreshCalls != before.refreshCalls || e.api.authCalls != before.authCalls || e.prov.calls != providerCalls {
-		t.Error("a latched bridge must not contact Proton or the secret store")
+	if e.api.refreshCalls != before.refreshCalls || e.api.authCalls != before.authCalls {
+		t.Error("a latched bridge must not contact Proton")
 	}
 	if _, _, err := e.m.Auth("me", "d3Jvbmc="); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("a wrong bridge password must still be refused: %v", err)
