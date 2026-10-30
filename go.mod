@@ -1,8 +1,6 @@
 module github.com/mathewcsims/protoxide
 
-go 1.23.0
-
-toolchain go1.24.2
+go 1.26.0
 
 require (
 	github.com/ProtonMail/go-crypto v1.3.0
@@ -17,15 +15,15 @@ require (
 	github.com/emersion/go-webdav v0.7.0
 	github.com/google/uuid v1.6.0
 	go.etcd.io/bbolt v1.4.2
-	golang.org/x/crypto v0.40.0
-	golang.org/x/term v0.33.0
+	golang.org/x/crypto v0.58.0
+	golang.org/x/term v0.47.0
 )
 
 require (
-	github.com/cloudflare/circl v1.6.3 // indirect
+	github.com/cloudflare/circl v1.6.5 // indirect
 	github.com/teambition/rrule-go v1.8.2 // indirect
-	golang.org/x/sys v0.34.0 // indirect
-	golang.org/x/text v0.27.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )
 
 replace github.com/emersion/go-webdav => ./third_party/go-webdav
