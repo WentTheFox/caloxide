@@ -424,3 +424,40 @@ func TestTheDryRunReportsSharedAddresses(t *testing.T) {
 		t.Errorf("output:\n%s", out)
 	}
 }
+
+func TestASeriesWithEditedOccurrencesIsSplitOverSeveralResources(t *testing.T) {
+	objs := objectsOf(map[string]*ical.Calendar{
+		"series": recurring("s1", ""),
+		"edit1":  recurring("s1", "20260126T100000Z"),
+		"edit2":  recurring("s1", "20260202T100000Z"),
+		"plain":  event("p1"),
+		"other":  recurring("s2", ""),
+	})
+	series, events, occurrences := splitSeries(objs)
+	if series != 1 || events != 3 || occurrences != 2 {
+		t.Fatalf("series=%d events=%d occurrences=%d, want 1, 3, 2", series, events, occurrences)
+	}
+}
+
+func TestPlainAndUnsplitSeriesAreNotCounted(t *testing.T) {
+	objs := objectsOf(map[string]*ical.Calendar{"a": event("a"), "b": recurring("b", ""), "c": event("c")})
+	if series, events, occ := splitSeries(objs); series != 0 || events != 0 || occ != 0 {
+		t.Fatalf("%d %d %d", series, events, occ)
+	}
+}
+
+func TestTheDryRunReportsSplitSeries(t *testing.T) {
+	home(t)
+	dir := filepath.Dir(mustPath(t, "x"))
+	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{
+		"a": recurring("s1", ""), "b": recurring("s1", "20260126T100000Z"), "c": event("plain"),
+	}), testKey)
+	reports, _ := CheckCacheDir(dir, func() (*[32]byte, error) { return testKey, nil })
+	r := reports[0]
+	if r.SplitSeries != 1 || r.SplitEvents != 2 || r.EditedOccurences != 1 {
+		t.Fatalf("%+v", r)
+	}
+	if out := r.String(); !strings.Contains(out, "1 recurring series are served as several resources (2 events in all, 1 edited occurrences)") {
+		t.Errorf("output:\n%s", out)
+	}
+}

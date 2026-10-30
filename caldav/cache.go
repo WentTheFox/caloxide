@@ -399,6 +399,9 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 
 	saveCacheToDisk(calID, cc, b.cacheKey)
 	log.Printf("cache %s: loaded %d events", calID, len(fresh))
+	if n, ev, occ := splitSeries(fresh); n > 0 {
+		log.Printf("cache %s: %d recurring series are served as several resources (%d events in all, %d edited occurrences in the calendar); a client keys an item by UID and expects one resource per series", calID, n, ev, occ)
+	}
 	if n, ev := addressCollisions(fresh); n > 0 {
 		log.Printf("cache %s: %d address(es) are shared by several events (%d events in all), so a client can only be given one of each", calID, n, ev)
 	}
@@ -580,6 +583,37 @@ func addressCollisions(objs map[string]caldav.CalendarObject) (addresses, events
 	return addresses, events
 }
 
+// splitSeries counts recurring series that are served as several resources: a UID with more
+// than one event (the series plus its edited occurrences). RFC 4791 section 4.1 wants every
+// component with one UID in a single calendar object resource, and a client such as
+// Thunderbird keys an item by UID, so a series spread over several addresses is one it
+// cannot keep settled. It returns the number of such UIDs, the events in them, and how many
+// events in the whole set are edited occurrences (carry a RECURRENCE-ID).
+func splitSeries(objs map[string]caldav.CalendarObject) (series, events, occurrences int) {
+	perUID := make(map[string]int, len(objs))
+	for id, o := range objs {
+		uid := id
+		if o.Data != nil {
+			if evs := o.Data.Events(); len(evs) > 0 {
+				if p := evs[0].Props.Get(ical.PropUID); p != nil && p.Value != "" {
+					uid = p.Value
+				}
+				if rid := evs[0].Props.Get(ical.PropRecurrenceID); rid != nil && rid.Value != "" {
+					occurrences++
+				}
+			}
+		}
+		perUID[uid]++
+	}
+	for _, n := range perUID {
+		if n > 1 {
+			series++
+			events += n
+		}
+	}
+	return series, events, occurrences
+}
+
 // restoreReport says what reading a cache file back gives.
 type restoreReport struct {
 	Entries  int            // events in the file
@@ -598,6 +632,10 @@ type restoreReport struct {
 
 	SharedAddresses int // addresses that several events would be served at
 	SharedEvents    int // the events involved
+
+	SplitSeries      int // UIDs served as several resources
+	SplitEvents      int // the events in them
+	EditedOccurences int // events that are an edited occurrence of a series
 }
 
 func (r restoreReport) Complete() bool { return r.Restored == r.Want }
@@ -653,6 +691,7 @@ func restoreObjects(pc persistedCache) (map[string]caldav.CalendarObject, restor
 	}
 	rep.Restored = len(objs)
 	rep.SharedAddresses, rep.SharedEvents = addressCollisions(objs)
+	rep.SplitSeries, rep.SplitEvents, rep.EditedOccurences = splitSeries(objs)
 	return objs, rep
 }
 
@@ -690,6 +729,10 @@ func loadCacheFromDisk(calID string, cc *calendarCache, key *[32]byte) bool {
 
 	if rep.Fixed > 0 {
 		log.Printf("cache %s: %d restored event(s) needed repair to be served to clients: %s", calID, rep.Fixed, countsSummary(rep.FixedKinds))
+	}
+	if rep.SplitSeries > 0 {
+		log.Printf("cache %s: %d recurring series are served as several resources (%d events in all, %d edited occurrences in the calendar); a client keys an item by UID and expects one resource per series",
+			calID, rep.SplitSeries, rep.SplitEvents, rep.EditedOccurences)
 	}
 	if rep.SharedAddresses > 0 {
 		log.Printf("cache %s: %d address(es) are shared by several events (%d events in all), so a client can only be given one of each",

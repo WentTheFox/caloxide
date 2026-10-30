@@ -11,24 +11,27 @@ import (
 
 // CacheFileReport describes one on-disk calendar cache, as the server would read it.
 type CacheFileReport struct {
-	File            string         `json:"file"`
-	Calendar        string         `json:"calendar"`
-	Bytes           int64          `json:"bytes"`
-	Entries         int            `json:"entries"`
-	Want            int            `json:"want"`
-	Restored        int            `json:"restored"`
-	FromTree        int            `json:"from_tree"`
-	FromText        int            `json:"from_text"`
-	Repaired        int            `json:"repaired"`
-	Fixed           int            `json:"fixed"`      // events a client could not be sent as stored, repaired on restore
-	Unservable      int            `json:"unservable"` // events that still cannot be sent
-	SharedAddresses int            `json:"shared_addresses"`
-	SharedEvents    int            `json:"shared_events"`
-	Failed          map[string]int `json:"failed,omitempty"`
-	FixedKinds      map[string]int `json:"fixed_kinds,omitempty"`
-	UnservableKind  map[string]int `json:"unservable_kinds,omitempty"`
-	Sealed          bool           `json:"sealed"`
-	Unusable        string         `json:"unusable,omitempty"` // the file could not be read at all
+	File             string         `json:"file"`
+	Calendar         string         `json:"calendar"`
+	Bytes            int64          `json:"bytes"`
+	Entries          int            `json:"entries"`
+	Want             int            `json:"want"`
+	Restored         int            `json:"restored"`
+	FromTree         int            `json:"from_tree"`
+	FromText         int            `json:"from_text"`
+	Repaired         int            `json:"repaired"`
+	Fixed            int            `json:"fixed"`      // events a client could not be sent as stored, repaired on restore
+	Unservable       int            `json:"unservable"` // events that still cannot be sent
+	SplitSeries      int            `json:"split_series"`
+	SplitEvents      int            `json:"split_events"`
+	EditedOccurences int            `json:"edited_occurrences"`
+	SharedAddresses  int            `json:"shared_addresses"`
+	SharedEvents     int            `json:"shared_events"`
+	Failed           map[string]int `json:"failed,omitempty"`
+	FixedKinds       map[string]int `json:"fixed_kinds,omitempty"`
+	UnservableKind   map[string]int `json:"unservable_kinds,omitempty"`
+	Sealed           bool           `json:"sealed"`
+	Unusable         string         `json:"unusable,omitempty"` // the file could not be read at all
 }
 
 // CheckCacheDir reads every calendar cache in dir and reports what reading it back gives.
@@ -86,6 +89,7 @@ func CheckCacheDir(dir string, keyFn func() (*[32]byte, error)) ([]CacheFileRepo
 		rep.FromTree, rep.FromText, rep.Repaired, rep.Failed = r.FromTree, r.FromText, r.Repaired, r.Failed
 		rep.Fixed, rep.Unservable = r.Fixed, r.Unservable
 		rep.SharedAddresses, rep.SharedEvents = r.SharedAddresses, r.SharedEvents
+		rep.SplitSeries, rep.SplitEvents, rep.EditedOccurences = r.SplitSeries, r.SplitEvents, r.EditedOccurences
 		rep.FixedKinds, rep.UnservableKind = r.FixedKinds, r.UnservableKind
 		out = append(out, rep)
 	}
@@ -138,6 +142,10 @@ func (r CacheFileReport) String() string {
 	if r.Unusable == "" {
 		if r.Fixed > 0 {
 			fmt.Fprintf(&sb, "    %s event(s) could not be sent to a client as stored and are repaired when loaded: %s\n", thousands(r.Fixed), countsSummary(r.FixedKinds))
+		}
+		if r.SplitSeries > 0 {
+			fmt.Fprintf(&sb, "    %s recurring series are served as several resources (%s events in all, %s edited occurrences): a client expects one resource per series\n",
+				thousands(r.SplitSeries), thousands(r.SplitEvents), thousands(r.EditedOccurences))
 		}
 		if r.SharedAddresses > 0 {
 			fmt.Fprintf(&sb, "    %s address(es) are shared by %s events: a client can be given only one event per address\n", thousands(r.SharedAddresses), thousands(r.SharedEvents))

@@ -198,6 +198,12 @@ inbound poll, Proton rate limiting us, (optionally) a long calendar load, a fail
   shared addresses, and each load also counts events whose data does not show what Proton's own
   record says (a recurrence id, excluded dates or a recurrence rule that only the record has).
   These are measurements, not repairs.
+- **One resource per series.** RFC 4791 (section 4.1) wants a recurring series and its edited
+  occurrences in a single calendar object resource, and a client such as Thunderbird keys an item
+  by `UID`. Proton keeps each edited occurrence as its own event, and they are currently served as
+  separate resources that share a `UID`. A load, a restore and `cache-check` count how many series
+  are served this way, because it is the likely reason a fixed group of recurring events is
+  downloaded again on every full sync and can blink out of view meanwhile.
 - **`caloxide cache-check`** is the dry run: it reads the cache files and reports, per calendar,
   how many events read back and whether the server would trust the file. It changes nothing,
   never contacts Proton, prints counts and error classes but never event text, and exits non-zero
