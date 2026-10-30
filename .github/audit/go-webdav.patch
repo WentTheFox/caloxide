@@ -1,5 +1,5 @@
 diff --git a/a/caldav/caldav.go b/b/caldav/caldav.go
-index 02705ef..eb6dbc9 100644
+index f4862c2..4c9e296 100644
 --- a/a/caldav/caldav.go
 +++ b/b/caldav/caldav.go
 @@ -69,6 +69,11 @@ type Calendar struct {
@@ -15,7 +15,7 @@ index 02705ef..eb6dbc9 100644
  
  type CalendarCompRequest struct {
 diff --git a/a/caldav/elements.go b/b/caldav/elements.go
-index 5759f31..9390fd3 100644
+index aed6050..736b899 100644
 --- a/a/caldav/elements.go
 +++ b/b/caldav/elements.go
 @@ -23,8 +23,22 @@ var (
@@ -42,12 +42,12 @@ index 5759f31..9390fd3 100644
  type calendarHomeSet struct {
  	XMLName xml.Name      `xml:"urn:ietf:params:xml:ns:caldav calendar-home-set"`
 diff --git a/a/caldav/server.go b/b/caldav/server.go
-index d3e83b8..d1d861b 100644
+index 1a25479..efcd164 100644
 --- a/a/caldav/server.go
 +++ b/b/caldav/server.go
-@@ -573,6 +573,11 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
- 			return &maxResourceSize{Size: cal.MaxResourceSize}, nil
- 		}
+@@ -570,6 +570,11 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
+ 			Size: cal.MaxResourceSize,
+ 		})
  	}
 +	if cal.CTag != "" {
 +		props[getCTagName] = func(*internal.RawXMLValue) (interface{}, error) {

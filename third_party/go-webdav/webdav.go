@@ -19,6 +19,16 @@ type FileInfo struct {
 	ETag     string
 }
 
+type CreateOptions struct {
+	IfMatch     ConditionalMatch
+	IfNoneMatch ConditionalMatch
+}
+
+type RemoveAllOptions struct {
+	IfMatch     ConditionalMatch
+	IfNoneMatch ConditionalMatch
+}
+
 type CopyOptions struct {
 	NoRecursive bool
 	NoOverwrite bool
@@ -47,4 +57,15 @@ func (val ConditionalMatch) ETag() (string, error) {
 		return "", err
 	}
 	return string(e), nil
+}
+
+func (val ConditionalMatch) MatchETag(etag string) (bool, error) {
+	if etag == "" {
+		return false, nil
+	}
+	if val.IsWildcard() {
+		return true, nil
+	}
+	t, err := val.ETag()
+	return t == etag, err
 }

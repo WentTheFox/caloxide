@@ -20,7 +20,7 @@ somebody reviewed, and does not change underneath us.
   host, new use of exec/sockets/HTTP/env/file-write APIs, new Go module, extra
   `replace` directive, new binary file, hidden Unicode, or text addressed to AI agents.
   Review the change, then update the allowlists in `.github/audit/`.
-- **Vendored `go-webdav`** must equal upstream v0.6.0 plus `.github/audit/go-webdav.patch`.
+- **Vendored `go-webdav`** must equal upstream v0.7.0 plus `.github/audit/go-webdav.patch`.
 - `govulncheck` (reachability-aware), CodeQL and dependency review run on every change
   and weekly.
 

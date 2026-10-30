@@ -19,7 +19,7 @@ import (
 // DiscoverContextURL performs a DNS-based CardDAV service discovery as
 // described in RFC 6352 section 11. It returns the URL to the CardDAV server.
 func DiscoverContextURL(ctx context.Context, domain string) (string, error) {
-	return internal.DiscoverContextURL(ctx, "caldavs", domain)
+	return internal.DiscoverContextURL(ctx, "caldav", domain)
 }
 
 // Client provides access to a remote CardDAV server.
@@ -154,7 +154,9 @@ func encodeCalendarReq(c *CalendarCompRequest) (*internal.Prop, error) {
 		return nil, err
 	}
 
-	calDataReq := calendarDataReq{Comp: compReq}
+	expandReq := encodeExpandRequest(c.Expand)
+
+	calDataReq := calendarDataReq{Comp: compReq, Expand: expandReq}
 
 	getLastModReq := internal.NewRawXMLElement(internal.GetLastModifiedName, nil, nil)
 	getETagReq := internal.NewRawXMLElement(internal.GetETagName, nil, nil)
@@ -171,6 +173,55 @@ func encodeCompFilter(filter *CompFilter) *compFilter {
 	}
 	for _, child := range filter.Comps {
 		encoded.CompFilters = append(encoded.CompFilters, *encodeCompFilter(&child))
+	}
+	for _, pf := range filter.Props {
+		encoded.PropFilters = append(encoded.PropFilters, *encodePropFilter(&pf))
+	}
+	return &encoded
+}
+
+func encodePropFilter(filter *PropFilter) *propFilter {
+	encoded := propFilter{Name: filter.Name}
+	if !filter.Start.IsZero() || !filter.End.IsZero() {
+		encoded.TimeRange = &timeRange{
+			Start: dateWithUTCTime(filter.Start),
+			End:   dateWithUTCTime(filter.End),
+		}
+	}
+	encoded.TextMatch = encodeTextMatch(filter.TextMatch)
+	for _, pf := range filter.ParamFilter {
+		encoded.ParamFilter = append(encoded.ParamFilter, encodeParamFilter(pf))
+	}
+	return &encoded
+}
+
+func encodeParamFilter(pf ParamFilter) paramFilter {
+	encoded := paramFilter{
+		Name:      pf.Name,
+		TextMatch: encodeTextMatch(pf.TextMatch),
+	}
+	return encoded
+}
+
+func encodeTextMatch(tm *TextMatch) *textMatch {
+	if tm == nil {
+		return nil
+	}
+
+	encoded := &textMatch{
+		Text:            tm.Text,
+		NegateCondition: negateCondition(tm.NegateCondition),
+	}
+	return encoded
+}
+
+func encodeExpandRequest(e *CalendarExpandRequest) *expand {
+	if e == nil {
+		return nil
+	}
+	encoded := expand{
+		Start: dateWithUTCTime(e.Start),
+		End:   dateWithUTCTime(e.End),
 	}
 	return &encoded
 }

@@ -2,8 +2,10 @@ package webdav
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"os"
@@ -64,11 +66,17 @@ func fileInfoFromOS(p string, fi os.FileInfo) *FileInfo {
 }
 
 func errFromOS(err error) error {
-	if os.IsNotExist(err) {
+	// Remove path from path errors so it's not returned to the user
+	var perr *fs.PathError
+	if errors.As(err, &perr) {
+		err = fmt.Errorf("%s: %w", perr.Op, perr.Err)
+	}
+
+	if errors.Is(err, fs.ErrNotExist) {
 		return NewHTTPError(http.StatusNotFound, err)
-	} else if os.IsPermission(err) {
+	} else if errors.Is(err, fs.ErrPermission) {
 		return NewHTTPError(http.StatusForbidden, err)
-	} else if os.IsTimeout(err) {
+	} else if errors.Is(err, os.ErrDeadlineExceeded) {
 		return NewHTTPError(http.StatusServiceUnavailable, err)
 	} else {
 		return err
@@ -95,8 +103,11 @@ func (fs LocalFileSystem) ReadDir(ctx context.Context, name string, recursive bo
 
 	var l []FileInfo
 	err = filepath.Walk(path, func(p string, fi os.FileInfo, err error) error {
-		if err != nil {
+		if err != nil && !errors.Is(err, os.ErrPermission) {
 			return err
+		}
+		if fi == nil {
+			return nil
 		}
 
 		href, err := fs.externalPath(p)
@@ -114,15 +125,41 @@ func (fs LocalFileSystem) ReadDir(ctx context.Context, name string, recursive bo
 	return l, errFromOS(err)
 }
 
-func (fs LocalFileSystem) Create(ctx context.Context, name string, body io.ReadCloser) (*FileInfo, bool, error) {
+func checkConditionalMatches(fi *FileInfo, ifMatch, ifNoneMatch ConditionalMatch) error {
+	etag := ""
+	if fi != nil {
+		etag = fi.ETag
+	}
+
+	if ifMatch.IsSet() {
+		if ok, err := ifMatch.MatchETag(etag); err != nil {
+			return NewHTTPError(http.StatusBadRequest, err)
+		} else if !ok {
+			return NewHTTPError(http.StatusPreconditionFailed, fmt.Errorf("If-Match condition failed"))
+		}
+	}
+
+	if ifNoneMatch.IsSet() {
+		if ok, err := ifNoneMatch.MatchETag(etag); err != nil {
+			return NewHTTPError(http.StatusBadRequest, err)
+		} else if ok {
+			return NewHTTPError(http.StatusPreconditionFailed, fmt.Errorf("If-None-Match condition failed"))
+		}
+	}
+
+	return nil
+}
+
+func (fs LocalFileSystem) Create(ctx context.Context, name string, body io.ReadCloser, opts *CreateOptions) (fi *FileInfo, created bool, err error) {
 	p, err := fs.localPath(name)
 	if err != nil {
 		return nil, false, err
 	}
-	created := false
-	fi, _ := fs.Stat(ctx, name)
-	if fi == nil {
-		created = true
+	fi, _ = fs.Stat(ctx, name)
+	created = fi == nil
+
+	if err := checkConditionalMatches(fi, opts.IfMatch, opts.IfNoneMatch); err != nil {
+		return nil, false, err
 	}
 
 	wc, err := os.Create(p)
@@ -132,9 +169,11 @@ func (fs LocalFileSystem) Create(ctx context.Context, name string, body io.ReadC
 	defer wc.Close()
 
 	if _, err := io.Copy(wc, body); err != nil {
+		os.Remove(p)
 		return nil, false, err
 	}
 	if err := wc.Close(); err != nil {
+		os.Remove(p)
 		return nil, false, err
 	}
 
@@ -146,7 +185,7 @@ func (fs LocalFileSystem) Create(ctx context.Context, name string, body io.ReadC
 	return fi, created, err
 }
 
-func (fs LocalFileSystem) RemoveAll(ctx context.Context, name string) error {
+func (fs LocalFileSystem) RemoveAll(ctx context.Context, name string, opts *RemoveAllOptions) error {
 	p, err := fs.localPath(name)
 	if err != nil {
 		return err
@@ -154,8 +193,13 @@ func (fs LocalFileSystem) RemoveAll(ctx context.Context, name string) error {
 
 	// WebDAV semantics are that it should return a "404 Not Found" error in
 	// case the resource doesn't exist. We need to Stat before RemoveAll.
-	if _, err = os.Stat(p); err != nil {
+	fi, err := fs.Stat(ctx, name)
+	if err != nil {
 		return errFromOS(err)
+	}
+
+	if err := checkConditionalMatches(fi, opts.IfMatch, opts.IfNoneMatch); err != nil {
+		return err
 	}
 
 	return errFromOS(os.RemoveAll(p))
@@ -166,7 +210,11 @@ func (fs LocalFileSystem) Mkdir(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	return errFromOS(os.Mkdir(p, 0755))
+	if err := os.Mkdir(p, 0755); os.IsExist(err) {
+		return NewHTTPError(http.StatusMethodNotAllowed, err)
+	} else {
+		return errFromOS(err)
+	}
 }
 
 func copyRegularFile(src, dst string, perm os.FileMode) error {

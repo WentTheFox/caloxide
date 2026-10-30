@@ -1,7 +1,7 @@
 # Vendored fork of go-webdav
 
 This is a vendored copy of [github.com/emersion/go-webdav](https://github.com/emersion/go-webdav)
-v0.6.0 (MIT, see `LICENSE`), used via a `replace` directive in the caloxide
+v0.7.0 (MIT, see `LICENSE`), used via a `replace` directive in the caloxide
 `go.mod`.
 
 ## Why it's vendored

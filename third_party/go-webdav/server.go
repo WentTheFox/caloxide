@@ -17,8 +17,8 @@ type FileSystem interface {
 	Open(ctx context.Context, name string) (io.ReadCloser, error)
 	Stat(ctx context.Context, name string) (*FileInfo, error)
 	ReadDir(ctx context.Context, name string, recursive bool) ([]FileInfo, error)
-	Create(ctx context.Context, name string, body io.ReadCloser) (fileInfo *FileInfo, created bool, err error)
-	RemoveAll(ctx context.Context, name string) error
+	Create(ctx context.Context, name string, body io.ReadCloser, opts *CreateOptions) (fileInfo *FileInfo, created bool, err error)
+	RemoveAll(ctx context.Context, name string, opts *RemoveAllOptions) error
 	Mkdir(ctx context.Context, name string) error
 	Copy(ctx context.Context, name, dest string, options *CopyOptions) (created bool, err error)
 	Move(ctx context.Context, name, dest string, options *MoveOptions) (created bool, err error)
@@ -162,26 +162,26 @@ func (b *backend) propFindFile(propfind *internal.PropFind, fi *FileInfo) (*inte
 	}
 
 	if !fi.IsDir {
-		props[internal.GetContentLengthName] = func(*internal.RawXMLValue) (interface{}, error) {
-			return &internal.GetContentLength{Length: fi.Size}, nil
-		}
+		props[internal.GetContentLengthName] = internal.PropFindValue(&internal.GetContentLength{
+			Length: fi.Size,
+		})
 
 		if !fi.ModTime.IsZero() {
-			props[internal.GetLastModifiedName] = func(*internal.RawXMLValue) (interface{}, error) {
-				return &internal.GetLastModified{LastModified: internal.Time(fi.ModTime)}, nil
-			}
+			props[internal.GetLastModifiedName] = internal.PropFindValue(&internal.GetLastModified{
+				LastModified: internal.Time(fi.ModTime),
+			})
 		}
 
 		if fi.MIMEType != "" {
-			props[internal.GetContentTypeName] = func(*internal.RawXMLValue) (interface{}, error) {
-				return &internal.GetContentType{Type: fi.MIMEType}, nil
-			}
+			props[internal.GetContentTypeName] = internal.PropFindValue(&internal.GetContentType{
+				Type: fi.MIMEType,
+			})
 		}
 
 		if fi.ETag != "" {
-			props[internal.GetETagName] = func(*internal.RawXMLValue) (interface{}, error) {
-				return &internal.GetETag{ETag: internal.ETag(fi.ETag)}, nil
-			}
+			props[internal.GetETagName] = internal.PropFindValue(&internal.GetETag{
+				ETag: internal.ETag(fi.ETag),
+			})
 		}
 	}
 
@@ -189,12 +189,62 @@ func (b *backend) propFindFile(propfind *internal.PropFind, fi *FileInfo) (*inte
 }
 
 func (b *backend) PropPatch(r *http.Request, update *internal.PropertyUpdate) (*internal.Response, error) {
-	// TODO: return a failed Response instead
-	return nil, internal.HTTPErrorf(http.StatusForbidden, "webdav: PROPPATCH is unsupported")
+	fi, err := b.FileSystem.Stat(r.Context(), r.URL.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &internal.Response{Hrefs: []internal.Href{internal.Href{Path: fi.Path}}}
+
+	for _, set := range update.Set {
+		for _, raw := range set.Prop.Raw {
+			xmlName, ok := raw.XMLName()
+			if !ok {
+				continue
+			}
+
+			emptyVal := internal.NewRawXMLElement(xmlName, nil, nil)
+
+			if err := resp.EncodeProp(http.StatusForbidden, emptyVal); err != nil {
+				return nil, err
+			}
+		}
+
+	}
+
+	for _, remove := range update.Remove {
+		for _, raw := range remove.Prop.Raw {
+			xmlName, ok := raw.XMLName()
+			if !ok {
+				continue
+			}
+
+			emptyVal := internal.NewRawXMLElement(xmlName, nil, nil)
+
+			if err := resp.EncodeProp(http.StatusForbidden, emptyVal); err != nil {
+				return nil, err
+			}
+		}
+
+	}
+
+	if len(resp.PropStats) == 0 {
+		return nil, internal.HTTPErrorf(http.StatusBadRequest,
+			"webdav: request missing properties to update")
+	}
+
+	return resp, nil
 }
 
 func (b *backend) Put(w http.ResponseWriter, r *http.Request) error {
-	fi, created, err := b.FileSystem.Create(r.Context(), r.URL.Path, r.Body)
+	ifNoneMatch := ConditionalMatch(r.Header.Get("If-None-Match"))
+	ifMatch := ConditionalMatch(r.Header.Get("If-Match"))
+
+	opts := CreateOptions{
+		IfNoneMatch: ifNoneMatch,
+		IfMatch:     ifMatch,
+	}
+	fi, created, err := b.FileSystem.Create(r.Context(), r.URL.Path, r.Body, &opts)
 	if err != nil {
 		return err
 	}
@@ -219,7 +269,14 @@ func (b *backend) Put(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (b *backend) Delete(r *http.Request) error {
-	return b.FileSystem.RemoveAll(r.Context(), r.URL.Path)
+	ifNoneMatch := ConditionalMatch(r.Header.Get("If-None-Match"))
+	ifMatch := ConditionalMatch(r.Header.Get("If-Match"))
+
+	opts := RemoveAllOptions{
+		IfNoneMatch: ifNoneMatch,
+		IfMatch:     ifMatch,
+	}
+	return b.FileSystem.RemoveAll(r.Context(), r.URL.Path, &opts)
 }
 
 func (b *backend) Mkcol(r *http.Request) error {
@@ -308,21 +365,16 @@ func servePrincipalPropfind(w http.ResponseWriter, r *http.Request, options *Ser
 		return err
 	}
 	props := map[xml.Name]internal.PropFindFunc{
-		internal.ResourceTypeName: func(*internal.RawXMLValue) (interface{}, error) {
-			return internal.NewResourceType(principalName), nil
-		},
-		internal.CurrentUserPrincipalName: func(*internal.RawXMLValue) (interface{}, error) {
-			return &internal.CurrentUserPrincipal{Href: internal.Href{Path: options.CurrentUserPrincipalPath}}, nil
-		},
+		internal.ResourceTypeName: internal.PropFindValue(internal.NewResourceType(internal.PrincipalName)),
+		internal.CurrentUserPrincipalName: internal.PropFindValue(&internal.CurrentUserPrincipal{
+			Href: internal.Href{Path: options.CurrentUserPrincipalPath},
+		}),
 	}
 
 	// TODO: handle Depth and more properties
 
 	for _, homeSet := range options.HomeSets {
-		hs := homeSet // capture variable for closure
-		props[homeSet.GetXMLName()] = func(*internal.RawXMLValue) (interface{}, error) {
-			return hs, nil
-		}
+		props[homeSet.GetXMLName()] = internal.PropFindValue(homeSet)
 	}
 
 	resp, err := internal.NewPropFindResponse(r.URL.Path, &propfind, props)

@@ -251,7 +251,7 @@ change the port or host, add flags to the unit with `systemctl --user edit`.
 - `webverify/`: the one-time CAPTCHA page and the control socket behind `caloxide verify`.
 - `notify/`: Discord and Apprise alerts. `cookiestore/`, `totp/`, `backoff/`: small
   single-purpose packages.
-- `third_party/go-webdav`: vendored v0.6.0 with a small patch to emit the CTag, see
+- `third_party/go-webdav`: vendored v0.7.0 with a small patch to emit the CTag, see
   [`CALOXIDE-PATCH.md`](third_party/go-webdav/CALOXIDE-PATCH.md).
 
 ## Changes from upstream

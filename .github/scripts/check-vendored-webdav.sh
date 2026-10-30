@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verifies third_party/go-webdav is exactly upstream emersion/go-webdav v0.6.0
+# Verifies third_party/go-webdav is exactly upstream emersion/go-webdav v0.7.0
 # plus the patch recorded in .github/audit/go-webdav.patch, and nothing else.
 # Upstream is fetched by commit SHA (not tag), so a moved tag can't fool it.
 #
@@ -8,7 +8,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 UPSTREAM_URL=https://github.com/emersion/go-webdav.git
-UPSTREAM_SHA=7f8c17ad71358ddb6e1462e4f204e022e3a83399 # v0.6.0 (commit, not the annotated tag object)
+UPSTREAM_SHA=f93b8288cc9a504935ae39b65e5f9c0a23624ea4 # v0.7.0 (commit, not the annotated tag object)
 EXPECTED="$ROOT/.github/audit/go-webdav.patch"
 
 work=$(mktemp -d)
@@ -38,6 +38,6 @@ fi
 if diff -u "$EXPECTED" "$actual"; then
   echo "ok: third_party/go-webdav == upstream $UPSTREAM_SHA + recorded patch"
 else
-  echo "::error::third_party/go-webdav differs from upstream v0.6.0 + the recorded patch (diff above)"
+  echo "::error::third_party/go-webdav differs from upstream v0.7.0 + the recorded patch (diff above)"
   exit 1
 fi
