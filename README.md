@@ -191,6 +191,13 @@ inbound poll, Proton rate limiting us, (optionally) a long calendar load, a fail
 - **Repeated properties are all kept.** Merging an event's cards used to keep only the last value
   of a property that appears more than once, so a recurring event lost all but one `EXDATE` (the
   excluded occurrences came back) and an event lost all but one `ATTENDEE`.
+- **Events must not share an address.** A client keys an event by its URL, which comes from the
+  event's `UID` (plus its `RECURRENCE-ID` for a single edited occurrence). Two events at one URL
+  cannot both be delivered, and which one is served can change whenever the cache is rebuilt, so
+  recurring events can seem to vanish and return. A load, a restore and `cache-check` count such
+  shared addresses, and each load also counts events whose data does not show what Proton's own
+  record says (a recurrence id, excluded dates or a recurrence rule that only the record has).
+  These are measurements, not repairs.
 - **`caloxide cache-check`** is the dry run: it reads the cache files and reports, per calendar,
   how many events read back and whether the server would trust the file. It changes nothing,
   never contacts Proton, prints counts and error classes but never event text, and exits non-zero

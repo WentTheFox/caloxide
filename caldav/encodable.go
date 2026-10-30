@@ -12,6 +12,7 @@ import (
 	"bytes"
 
 	"github.com/emersion/go-ical"
+	"github.com/mathewcsims/protoxide/protonmail"
 )
 
 // An event is assembled from several of Proton's cards, and the iCalendar encoder (which
@@ -195,6 +196,17 @@ var serving struct {
 	repaired   map[string]int // label -> events
 	events     int            // events that needed at least one repair
 	unservable map[string]int // error class -> events still not encodable
+	oddities   map[string]int // things in Proton's event record that the event data does not show
+}
+
+// noteOddity counts an event whose data disagrees with Proton's own record of it.
+func noteOddity(label string) {
+	serving.mu.Lock()
+	defer serving.mu.Unlock()
+	if serving.oddities == nil {
+		serving.oddities = map[string]int{}
+	}
+	serving.oddities[label]++
 }
 
 func noteServing(repairs []string, err error) {
@@ -224,9 +236,14 @@ func noteServing(repairs []string, err error) {
 // logServing writes the summary of repairs and of events that still cannot be served.
 func logServing(calID string) {
 	serving.mu.Lock()
-	repaired, events, unservable := serving.repaired, serving.events, serving.unservable
-	serving.repaired, serving.events, serving.unservable = nil, 0, nil
+	repaired, events, unservable, oddities := serving.repaired, serving.events, serving.unservable, serving.oddities
+	serving.repaired, serving.events, serving.unservable, serving.oddities = nil, 0, nil, nil
 	serving.mu.Unlock()
+
+	if len(oddities) > 0 {
+		log.Printf("cache %s: events read since the last summary whose data does not show what Proton's own record of the event says: %s",
+			calID, countsSummary(oddities))
+	}
 
 	if events > 0 {
 		log.Printf("cache %s: %d event(s) read since the last summary needed repair to be served to clients: %s",
@@ -266,4 +283,21 @@ func countsSummary(m map[string]int) string {
 		parts = append(parts, fmt.Sprintf("%dx %s", e.n, e.k))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// recordOddities lists the facts in Proton's own record of an event that the assembled event
+// data does not show. A single edited occurrence without its RECURRENCE-ID, for instance,
+// would be served at the address of its series.
+func recordOddities(record *protonmail.CalendarEvent, ev *ical.Component) []string {
+	var out []string
+	if record.RecurrenceID != nil && ev.Props.Get(ical.PropRecurrenceID) == nil {
+		out = append(out, "a recurrence id in the record but no RECURRENCE-ID in the data")
+	}
+	if len(record.Exdates) > 0 && len(ev.Props.Values(ical.PropExceptionDates)) == 0 {
+		out = append(out, "excluded dates in the record but no EXDATE in the data")
+	}
+	if record.RRule != nil && ev.Props.Get(ical.PropRecurrenceRule) == nil {
+		out = append(out, "a recurrence rule in the record but no RRULE in the data")
+	}
+	return out
 }

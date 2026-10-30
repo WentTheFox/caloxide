@@ -202,6 +202,14 @@ func toIcalCalendar(event *protonmail.CalendarEvent, userKr openpgp.KeyRing, cal
 	utils.MapCopy(cal.Props, calProps)
 	cal.Children = append(cal.Children, merged.Component)
 
+	// Proton's record of an event carries some facts separately from the cards. If the
+	// event data does not show them, a client sees a different event than Proton does, and
+	// a single edited occurrence without its RECURRENCE-ID shares an address with its series.
+	// Counted here, not guessed at: these only measure how often it happens.
+	for _, o := range recordOddities(event, merged.Component) {
+		noteOddity(o)
+	}
+
 	// The encoder is strict and every client request runs it; see makeEncodable.
 	facts := eventFacts{uid: event.UID, stamp: time.Unix(int64(event.LastEditTime), 0)}
 	if event.LastEditTime == 0 {

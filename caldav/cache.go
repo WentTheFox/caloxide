@@ -399,6 +399,9 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 
 	saveCacheToDisk(calID, cc, b.cacheKey)
 	log.Printf("cache %s: loaded %d events", calID, len(fresh))
+	if n, ev := addressCollisions(fresh); n > 0 {
+		log.Printf("cache %s: %d address(es) are shared by several events (%d events in all), so a client can only be given one of each", calID, n, ev)
+	}
 	logUnverifiedSignatures(calID)
 	logServing(calID)
 }
@@ -560,6 +563,23 @@ func saveCacheToDisk(calID string, cc *calendarCache, key *[32]byte) {
 var noKeyOnce sync.Once
 
 // loadCacheFromDisk populates cc from a previously-saved cache file, if present.
+// addressCollisions counts the addresses that more than one event would be served at, and
+// the events involved. A client keys an event by its address, so events sharing one cannot
+// all be delivered, and which of them is served can change whenever the cache is rebuilt.
+func addressCollisions(objs map[string]caldav.CalendarObject) (addresses, events int) {
+	byToken := make(map[string]int, len(objs))
+	for id, o := range objs {
+		byToken[objectToken(o.Data, id)]++
+	}
+	for _, n := range byToken {
+		if n > 1 {
+			addresses++
+			events += n
+		}
+	}
+	return addresses, events
+}
+
 // restoreReport says what reading a cache file back gives.
 type restoreReport struct {
 	Entries  int            // events in the file
@@ -575,6 +595,9 @@ type restoreReport struct {
 	FixedKinds     map[string]int // repair -> events
 	Unservable     int            // events that still do not encode after the repair
 	UnservableKind map[string]int // error class -> events
+
+	SharedAddresses int // addresses that several events would be served at
+	SharedEvents    int // the events involved
 }
 
 func (r restoreReport) Complete() bool { return r.Restored == r.Want }
@@ -629,6 +652,7 @@ func restoreObjects(pc persistedCache) (map[string]caldav.CalendarObject, restor
 		objs[id] = caldav.CalendarObject{Path: po.Path, ETag: po.ETag, ModTime: po.ModTime, Data: data}
 	}
 	rep.Restored = len(objs)
+	rep.SharedAddresses, rep.SharedEvents = addressCollisions(objs)
 	return objs, rep
 }
 
@@ -666,6 +690,10 @@ func loadCacheFromDisk(calID string, cc *calendarCache, key *[32]byte) bool {
 
 	if rep.Fixed > 0 {
 		log.Printf("cache %s: %d restored event(s) needed repair to be served to clients: %s", calID, rep.Fixed, countsSummary(rep.FixedKinds))
+	}
+	if rep.SharedAddresses > 0 {
+		log.Printf("cache %s: %d address(es) are shared by several events (%d events in all), so a client can only be given one of each",
+			calID, rep.SharedAddresses, rep.SharedEvents)
 	}
 	if rep.Unservable > 0 {
 		log.Printf("cache %s: %d restored event(s) cannot be served to clients, because they do not encode as iCalendar; loading the calendar from Proton again may fix them (%s)",

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/emersion/go-ical"
+	"github.com/emersion/go-webdav/caldav"
+	"github.com/mathewcsims/protoxide/protonmail"
 )
 
 var factsFixture = eventFacts{uid: "uid-from-proton", stamp: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)}
@@ -325,5 +327,100 @@ func TestTheDryRunSaysWhatWouldBeRepairedAndChangesNothing(t *testing.T) {
 	}
 	if snapshotDir(t, dir) != before {
 		t.Fatal("the dry run changed the directory")
+	}
+}
+
+// --- diagnostics: does the data show what Proton's record says? ---
+
+func TestRecordOdditiesNameEachMismatch(t *testing.T) {
+	data := ical.NewEvent() // nothing recurring in the data
+	rec := &protonmail.CalendarEvent{RecurrenceID: 1767600000.0, Exdates: []interface{}{1.0, 2.0}, RRule: map[string]interface{}{"Frequency": "WEEKLY"}}
+	got := recordOddities(rec, data.Component)
+	if len(got) != 3 {
+		t.Fatalf("want three oddities, got %v", got)
+	}
+	for _, want := range []string{"RECURRENCE-ID", "EXDATE", "RRULE"} {
+		found := false
+		for _, g := range got {
+			found = found || strings.Contains(g, want)
+		}
+		if !found {
+			t.Errorf("no oddity mentions %s: %v", want, got)
+		}
+	}
+}
+
+func TestRecordOdditiesStaySilentWhenTheDataAgrees(t *testing.T) {
+	data := ical.NewEvent()
+	data.Props.Set(&ical.Prop{Name: ical.PropRecurrenceID, Value: "20260126T100000Z"})
+	data.Props.Set(&ical.Prop{Name: ical.PropRecurrenceRule, Value: "FREQ=WEEKLY"})
+	data.Props.Add(&ical.Prop{Name: ical.PropExceptionDates, Value: "20260112T100000Z"})
+	rec := &protonmail.CalendarEvent{RecurrenceID: 1.0, Exdates: []interface{}{1.0}, RRule: "x"}
+	if got := recordOddities(rec, data.Component); len(got) != 0 {
+		t.Fatalf("%v", got)
+	}
+	if got := recordOddities(&protonmail.CalendarEvent{}, ical.NewEvent().Component); len(got) != 0 {
+		t.Fatalf("a plain event has nothing to disagree about: %v", got)
+	}
+}
+
+func TestOdditiesAreSummarisedWithTheServingRepairs(t *testing.T) {
+	logs := captureCacheLog(t)
+	for i := 0; i < 90; i++ {
+		noteOddity("a recurrence id in the record but no RECURRENCE-ID in the data")
+	}
+	noteOddity("excluded dates in the record but no EXDATE in the data")
+	logServing("cal")
+	out := logs.String()
+	if strings.Count(out, "\n") != 1 || !strings.Contains(out, "90x a recurrence id in the record") || !strings.Contains(out, "1x excluded dates") {
+		t.Fatalf("expected one summary line:\n%s", out)
+	}
+}
+
+// --- shared addresses ---
+
+func objectsOf(events map[string]*ical.Calendar) map[string]caldav.CalendarObject {
+	out := map[string]caldav.CalendarObject{}
+	for id, d := range events {
+		out[id] = caldav.CalendarObject{Path: "/p/" + id, Data: d}
+	}
+	return out
+}
+
+func TestEventsSharingAUIDWithoutARecurrenceIDShareAnAddress(t *testing.T) {
+	objs := objectsOf(map[string]*ical.Calendar{
+		"series":    recurring("shared-uid", ""),
+		"duplicate": recurring("shared-uid", ""), // same UID, no RECURRENCE-ID
+		"other":     event("unique"),
+	})
+	if addrs, evs := addressCollisions(objs); addrs != 1 || evs != 2 {
+		t.Fatalf("addresses=%d events=%d, want 1 and 2", addrs, evs)
+	}
+}
+
+func TestEditedOccurrencesWithTheirRecurrenceIDGetTheirOwnAddress(t *testing.T) {
+	objs := objectsOf(map[string]*ical.Calendar{
+		"series": recurring("shared-uid", ""),
+		"one":    recurring("shared-uid", "20260126T100000Z"),
+		"two":    recurring("shared-uid", "20260202T100000Z"),
+	})
+	if addrs, evs := addressCollisions(objs); addrs != 0 || evs != 0 {
+		t.Fatalf("a series with edited occurrences is not a collision: %d %d", addrs, evs)
+	}
+}
+
+func TestTheDryRunReportsSharedAddresses(t *testing.T) {
+	home(t)
+	dir := filepath.Dir(mustPath(t, "x"))
+	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{
+		"a": recurring("dup", ""), "b": recurring("dup", ""), "c": event("fine"),
+	}), testKey)
+	reports, _ := CheckCacheDir(dir, func() (*[32]byte, error) { return testKey, nil })
+	r := reports[0]
+	if r.SharedAddresses != 1 || r.SharedEvents != 2 {
+		t.Fatalf("%+v", r)
+	}
+	if out := r.String(); !strings.Contains(out, "1 address(es) are shared by 2 events") || strings.Contains(out, "dup") {
+		t.Errorf("output:\n%s", out)
 	}
 }
