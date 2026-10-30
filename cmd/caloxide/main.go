@@ -330,7 +330,11 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 			if !ok {
 				ch := make(chan *protonmail.Event)
 				r := eventsManager.Register(c, username, ch, nil)
-				h = caldav.NewHandler(c, privateKeys, username, ch)
+				cacheKey, err := auth.CacheKey(password)
+				if err != nil {
+					log.Printf("CalDAV: no key for the calendar cache, it will not be saved to disk: %v", err)
+				}
+				h = caldav.NewHandler(c, privateKeys, username, ch, caldav.WithCacheKey(cacheKey))
 				// Standby slows the account event loop too while nobody uses the server.
 				caldav.WireCoreLoop(h, r.SetInterval, r.Poll)
 
@@ -738,7 +742,14 @@ func main() {
 		if d := flag.Arg(1); d != "" {
 			dir = d
 		}
-		reports, err := caldav.CheckCacheDir(dir)
+		// Encrypted caches open with the bridge password, asked for only if one is met.
+		reports, err := caldav.CheckCacheDir(dir, func() (*[32]byte, error) {
+			pw, err := askBridgePass()
+			if err != nil {
+				return nil, err
+			}
+			return auth.CacheKey(pw)
+		})
 		if err != nil {
 			log.Fatal(err)
 		}

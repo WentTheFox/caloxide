@@ -51,6 +51,9 @@ type backend struct {
 	namesMu sync.Mutex
 	names   map[string]string // calendar ID -> display name, as seen in ListCalendars
 
+	// cacheKey seals the calendar cache on disk; see sealed.go. Nil means no cache is saved.
+	cacheKey *[32]byte
+
 	standby *standbyState
 	cycles  cycles
 	core    func() // wakes the account event loop; set by WireCoreLoop
@@ -639,7 +642,14 @@ func (b *backend) CurrentUserPrincipal(ctx context.Context) (string, error) {
 	return "/caldav/", nil
 }
 
-func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username string, events <-chan *protonmail.Event) http.Handler {
+// Option adjusts a handler made by NewHandler.
+type Option func(*backend)
+
+// WithCacheKey sets the key that seals the calendar cache on disk (auth.CacheKey). Without
+// one the cache is kept in memory only.
+func WithCacheKey(key *[32]byte) Option { return func(b *backend) { b.cacheKey = key } }
+
+func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username string, events <-chan *protonmail.Event, opts ...Option) http.Handler {
 	if len(privateKeys) == 0 {
 		panic("caloxide/caldav: no private key available")
 	}
@@ -654,6 +664,9 @@ func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username s
 		stops:       make(map[string]chan struct{}),
 	}
 
+	for _, opt := range opts {
+		opt(b)
+	}
 	b.username = username
 	b.earlySync = earlySyncFromEnv()
 	b.loads = newLoadTracker(loadAlertSettingsFromEnv(), b.calendarName, c.RateLimitPause)

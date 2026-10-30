@@ -170,17 +170,19 @@ inbound poll, Proton rate limiting us, (optionally) a long calendar load, a fail
   rate-limit pause, the push channel and standby. In a container:
   `docker exec caloxide /caloxide -config-home /data status`. It talks to the running server
   over the control socket only, never over the network.
-- **The on-disk cache never passes itself off as complete.** Events are stored as their
-  structure (not as iCalendar text), so every event comes back as it went in, and a file also
-  records how many events it was meant to hold. If a restore finds fewer, the calendar counts as
+- **The on-disk cache is encrypted and never passes itself off as complete.** The file is
+  sealed (see Limitations). Events are stored as their structure (not as iCalendar text), so every
+  event comes back as it went in, and a file also records how many events it was meant to hold.
+  Without a key (which cannot happen in normal use) nothing is saved, never a plaintext copy. If a restore finds fewer, the calendar counts as
   not loaded and is fetched from Proton again in full, with a log line saying how many events
-  were unreadable and why. Caches from earlier versions are still read and are rewritten in the
-  new format (the old file is kept once as `calcache-*.json.bak`; it is safe to delete). This only
-  ever reads from Proton, nothing is written to it.
+  were unreadable and why. Caches from earlier versions are still read and are replaced by sealed
+  ones (a `calcache-*.json.bak` left by version 0.6.1 is deleted). This only ever reads from Proton,
+  nothing is written to it.
 - **`caloxide cache-check`** is the dry run: it reads the cache files and reports, per calendar,
   how many events read back and whether the server would trust the file. It changes nothing,
   never contacts Proton, prints counts and error classes but never event text, and exits non-zero
-  if any calendar would be loaded again. In a container:
+  if any calendar would be loaded again. Sealed caches need the bridge password to be opened:
+  it asks for it (or reads `HYDROXIDE_BRIDGE_PASS`), only if there is a sealed file to check. In a container:
   `docker exec caloxide /caloxide -config-home /data cache-check`.
 - **Load alerts** (`CALOXIDE_LOAD_ALERTS`) are for first loads that may take seconds or hours.
   Quick loads send nothing. With `progress`, a message every interval lists each calendar's
@@ -228,9 +230,15 @@ inbound poll, Proton rate limiting us, (optionally) a long calendar load, a fail
   served and logged ("serving event with unverified signature"), not dropped, so that old
   or imported events stay visible.
 - **Secrets on disk.** `auth.json` holds the session and, if you provided them, the login
-  password and 2FA seed, sealed with NaCl secretbox under the bridge password. Whoever has
-  that file *and* the bridge password has your account. The cache holds your calendar in
-  plaintext (mode 0600); delete `calcache-*.json` to purge it.
+  password and 2FA seed, sealed with NaCl secretbox under the bridge password. The calendar
+  cache (`calcache-*.json`) is sealed the same way, with a key derived from the bridge password
+  and kept only in memory, so it opens only after a client has authenticated. Whoever has the
+  bridge password can open both; whoever has only the files cannot. Visible without it: the
+  calendar IDs in the file names and roughly how big each calendar is. Caches written by earlier
+  versions were plaintext and are replaced by sealed ones; the old content may linger in free
+  disk blocks (flash storage cannot be reliably wiped from software), so use disk encryption if
+  that matters. Changing the bridge password makes the old cache unreadable; it is then loaded
+  from Proton again.
 - **Scope.** Calendar is what is maintained. Mail, IMAP, SMTP and CardDAV are inherited
   and untested; use the official Proton Mail Bridge for mail.
 

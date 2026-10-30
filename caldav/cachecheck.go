@@ -21,13 +21,20 @@ type CacheFileReport struct {
 	FromText int            `json:"from_text"`
 	Repaired int            `json:"repaired"`
 	Failed   map[string]int `json:"failed,omitempty"`
+	Sealed   bool           `json:"sealed"`
 	Unusable string         `json:"unusable,omitempty"` // the file could not be read at all
 }
 
 // CheckCacheDir reads every calendar cache in dir and reports what reading it back gives.
 // It is a dry run in the strict sense: it only reads, never writes, never contacts
 // Proton, and its output contains counts and error classes, never event text.
-func CheckCacheDir(dir string) ([]CacheFileReport, error) {
+//
+// Sealed caches need the key. keyFn is called at most once, the first time a sealed file is
+// met (so it can ask for the bridge password then), and may be nil.
+func CheckCacheDir(dir string, keyFn func() (*[32]byte, error)) ([]CacheFileReport, error) {
+	var key *[32]byte
+	var keyErr error
+	haveKey := false
 	paths, err := filepath.Glob(filepath.Join(dir, "calcache-*.json"))
 	if err != nil {
 		return nil, err
@@ -44,9 +51,27 @@ func CheckCacheDir(dir string) ([]CacheFileReport, error) {
 			continue
 		}
 		rep.Bytes = int64(len(raw))
-		var pc persistedCache
-		if err := json.Unmarshal(raw, &pc); err != nil {
-			rep.Unusable = "not a readable cache file: " + errorClass(err)
+		// Is it sealed? Then the key is needed, and asked for once.
+		var env sealedFile
+		if json.Unmarshal(raw, &env) == nil && env.Format == sealedFormat {
+			rep.Sealed = true
+			if !haveKey {
+				haveKey = true
+				if keyFn != nil {
+					key, keyErr = keyFn()
+				} else {
+					keyErr = errNeedKey
+				}
+			}
+			if key == nil {
+				rep.Unusable = "encrypted, and it cannot be opened here: " + errorClass(keyErr)
+				out = append(out, rep)
+				continue
+			}
+		}
+		pc, _, err := openCacheFile(raw, key)
+		if err != nil {
+			rep.Unusable = errorClass(err)
 			out = append(out, rep)
 			continue
 		}
@@ -71,13 +96,23 @@ func (r CacheFileReport) String() string {
 	switch {
 	case r.Unusable != "":
 		fmt.Fprintf(&sb, "%s  UNUSABLE: %s\n    The server ignores this file and loads the calendar from Proton.\n", short, r.Unusable)
+		if r.Sealed {
+			sb.WriteString("    (An encrypted cache opens only with the bridge password it was saved under.)\n")
+		}
 	case r.Complete():
-		fmt.Fprintf(&sb, "%s  complete: %s of %s events read back (%s as structure, %s as text", short,
+		enc := "encrypted"
+		if !r.Sealed {
+			enc = "NOT encrypted"
+		}
+		fmt.Fprintf(&sb, "%s  complete, %s: %s of %s events read back (%s as structure, %s as text", short, enc,
 			thousands(r.Restored), thousands(r.Want), thousands(r.FromTree), thousands(r.FromText))
 		if r.Repaired > 0 {
 			fmt.Fprintf(&sb, ", %s needed repair", thousands(r.Repaired))
 		}
 		sb.WriteString(")\n")
+		if !r.Sealed {
+			sb.WriteString("    It is encrypted the next time the calendar is saved.\n")
+		}
 		if r.FromText > 0 {
 			sb.WriteString("    Text entries are rewritten as structure the next time the calendar is loaded in full.\n")
 		}

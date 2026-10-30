@@ -76,19 +76,33 @@ func writeLegacy(t *testing.T, calID string, ics map[string]string, count int) s
 
 func home(t *testing.T) { config.SetConfigHome(t.TempDir()) }
 
+var testKey = func() *[32]byte {
+	var k [32]byte
+	for i := range k {
+		k[i] = byte(i + 1)
+	}
+	return &k
+}()
+
+func otherKey() *[32]byte {
+	var k [32]byte
+	k[0] = 0xff
+	return &k
+}
+
 func TestACompleteCacheComesBackComplete(t *testing.T) {
 	home(t)
 	logs := captureCacheLog(t)
-	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a"), "b": event("b"), "c": event("c")}))
+	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a"), "b": event("b"), "c": event("c")}), testKey)
 
 	path, _ := cacheFilePath("cal")
 	raw, _ := os.ReadFile(path)
-	if !bytes.Contains(raw, []byte(`"Tree"`)) || bytes.Contains(raw, []byte(`"ICS"`)) {
-		t.Fatalf("new files store the structure, not text:\n%.300s", raw)
+	if !bytes.Contains(raw, []byte(sealedFormat)) || bytes.Contains(raw, []byte(`"Tree"`)) || bytes.Contains(raw, []byte("Secret event")) {
+		t.Fatalf("the file must be sealed, with nothing readable inside:\n%.300s", raw)
 	}
 
 	cc := fresh()
-	if !loadCacheFromDisk("cal", cc) || !cc.loaded || len(cc.objects) != 3 {
+	if !loadCacheFromDisk("cal", cc, testKey) || !cc.loaded || len(cc.objects) != 3 {
 		t.Fatalf("loaded=%v objects=%d", cc.loaded, len(cc.objects))
 	}
 	if !strings.Contains(logs.String(), "restored 3 events from disk") {
@@ -99,10 +113,10 @@ func TestACompleteCacheComesBackComplete(t *testing.T) {
 // The case that started this: events the encoder refuses used to vanish from the cache.
 func TestAnEventTheEncoderRefusesNowSurvivesTheRoundTrip(t *testing.T) {
 	home(t)
-	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a"), "bad": unencodable("bad")}))
+	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a"), "bad": unencodable("bad")}), testKey)
 
 	cc := fresh()
-	if !loadCacheFromDisk("cal", cc) || !cc.loaded || len(cc.objects) != 2 {
+	if !loadCacheFromDisk("cal", cc, testKey) || !cc.loaded || len(cc.objects) != 2 {
 		t.Fatalf("an event that cannot be written as text must still come back: loaded=%v objects=%d", cc.loaded, len(cc.objects))
 	}
 	got := cc.objects["bad"].Data.Children[0].Props.Values(ical.PropDateTimeStart)
@@ -123,9 +137,9 @@ func TestStructureRoundTripKeepsEverything(t *testing.T) {
 	alarm.Props.SetText("ACTION", "DISPLAY")
 	ev.Children = append(ev.Children, alarm)
 
-	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"x": cal}))
+	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"x": cal}), testKey)
 	cc := fresh()
-	loadCacheFromDisk("cal", cc)
+	loadCacheFromDisk("cal", cc, testKey)
 	back := cc.objects["x"].Data.Children[0]
 	a := back.Props.Get("ATTENDEE")
 	if a == nil || a.Params.Get("CN") != "Doe, Jane" || a.Value != "mailto:j@example.com" || len(back.Children) != 1 || back.Children[0].Name != ical.CompAlarm {
@@ -137,7 +151,7 @@ func TestCachesFromEarlierVersionsAreStillRead(t *testing.T) {
 	home(t)
 	writeLegacy(t, "cal", map[string]string{"a": encodeText(t, event("a")), "b": encodeText(t, event("b"))}, 0) // no Count: old file
 	cc := fresh()
-	if !loadCacheFromDisk("cal", cc) || len(cc.objects) != 2 || !cc.loaded {
+	if !loadCacheFromDisk("cal", cc, testKey) || len(cc.objects) != 2 || !cc.loaded {
 		t.Fatalf("loaded=%v objects=%d", cc.loaded, len(cc.objects))
 	}
 }
@@ -150,7 +164,7 @@ func TestUnreadableEventsMakeTheCacheIncompleteNotSilentlySmaller(t *testing.T) 
 		"b": "BEGIN:VCALENDAR\r\nthis line has no separator at all\r\nEND:VCALENDAR\r\n",
 	}, 2)
 	cc := fresh()
-	if loadCacheFromDisk("cal", cc) || cc.loaded {
+	if loadCacheFromDisk("cal", cc, testKey) || cc.loaded {
 		t.Fatal("a cache that lost an event must not come back as complete")
 	}
 	if len(cc.objects) != 1 {
@@ -164,7 +178,7 @@ func TestUnreadableEventsMakeTheCacheIncompleteNotSilentlySmaller(t *testing.T) 
 func TestACountLargerThanTheFileMeansEventsWereLost(t *testing.T) {
 	home(t)
 	writeLegacy(t, "cal", map[string]string{"a": encodeText(t, event("a")), "b": encodeText(t, event("b"))}, 3)
-	if loadCacheFromDisk("cal", fresh()) {
+	if loadCacheFromDisk("cal", fresh(), testKey) {
 		t.Fatal("the file says it was given 3 events to save but holds 2")
 	}
 }
@@ -174,38 +188,148 @@ func TestStoredTextIsRepairedLikeEventsFromProton(t *testing.T) {
 	text := strings.Replace(encodeText(t, event("a")), "SUMMARY:Secret event a", "SUMMARY:Secret event a\r\nand more words", 1)
 	writeLegacy(t, "cal", map[string]string{"a": text}, 1)
 	cc := fresh()
-	if !loadCacheFromDisk("cal", cc) || len(cc.objects) != 1 {
+	if !loadCacheFromDisk("cal", cc, testKey) || len(cc.objects) != 1 {
 		t.Fatalf("a repairable event must be restored, got %d (loaded=%v)", len(cc.objects), cc.loaded)
 	}
 }
 
-func TestTheFirstSaveOverAnOldFileKeepsItOnce(t *testing.T) {
+func TestAnOldPlaintextCacheIsReadOnceAndThenSealed(t *testing.T) {
 	home(t)
-	path := writeLegacy(t, "cal", map[string]string{"a": encodeText(t, event("a"))}, 1)
+	logs := captureCacheLog(t)
+	path := writeLegacy(t, "cal", map[string]string{"a": encodeText(t, event("a")), "b": encodeText(t, event("b"))}, 2)
 	old, _ := os.ReadFile(path)
-
-	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a")}))
-	bak, err := os.ReadFile(path + ".bak")
-	if err != nil || !bytes.Equal(bak, old) {
-		t.Fatalf("the old file was not kept: %v", err)
-	}
-	if now, _ := os.ReadFile(path); bytes.Equal(now, old) || !bytes.Contains(now, []byte(`"Tree"`)) {
-		t.Fatal("the cache was not rewritten in the new format")
+	if !bytes.Contains(old, []byte("Secret event")) {
+		t.Fatal("setup: the old file should be readable plaintext")
 	}
 
-	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a"), "b": event("b")}))
-	if again, _ := os.ReadFile(path + ".bak"); !bytes.Equal(again, old) {
-		t.Fatal("the backup of the old file must not be overwritten by later saves")
+	cc := fresh()
+	if !loadCacheFromDisk("cal", cc, testKey) || len(cc.objects) != 2 {
+		t.Fatal("an unencrypted cache from an earlier version must still be read")
+	}
+	if !strings.Contains(logs.String(), "did not encrypt it") {
+		t.Errorf("say so in the log:\n%s", logs.String())
+	}
+
+	cc.loaded = true
+	saveCacheToDisk("cal", cc, testKey)
+	now, _ := os.ReadFile(path)
+	if bytes.Contains(now, []byte("Secret event")) || bytes.Contains(now, []byte("BEGIN:VCALENDAR")) || !bytes.Contains(now, []byte(sealedFormat)) {
+		t.Fatalf("the cache must be sealed after the next save:\n%.200s", now)
 	}
 }
 
-func TestNoBackupIsMadeOfANewFormatFile(t *testing.T) {
+func TestSavingRemovesTheUnencryptedBackupOfVersion061(t *testing.T) {
 	home(t)
-	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a")}))
-	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a"), "b": event("b")}))
-	path, _ := cacheFilePath("cal")
+	logs := captureCacheLog(t)
+	path := writeLegacy(t, "cal", map[string]string{"a": encodeText(t, event("a"))}, 1)
+	os.WriteFile(path+".bak", []byte("plaintext calendar"), 0o600)
+
+	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a")}), testKey)
 	if _, err := os.Stat(path + ".bak"); err == nil {
-		t.Fatal("a file in the new format needs no backup")
+		t.Fatal("a plaintext copy next to the sealed cache defeats the encryption")
+	}
+	if !strings.Contains(logs.String(), "removed the unencrypted backup") {
+		t.Errorf("log:\n%s", logs.String())
+	}
+}
+
+// --- encryption ---
+
+func sealedOnDisk(t *testing.T) (string, []byte) {
+	t.Helper()
+	home(t)
+	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a"), "b": unencodable("b")}), testKey)
+	path, _ := cacheFilePath("cal")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path, raw
+}
+
+func TestSealedCacheContainsNothingReadable(t *testing.T) {
+	path, raw := sealedOnDisk(t)
+	for _, leak := range []string{"Secret event", "VEVENT", "DTSTART", "20260105", "Summary", "SUMMARY", "mailto", "/caldav/calendars", "e-a"} {
+		if bytes.Contains(raw, []byte(leak)) {
+			t.Errorf("%q is readable in the file", leak)
+		}
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v, want 0600", fi.Mode().Perm())
+	}
+	if _, err := os.Stat(path + ".tmp"); err == nil {
+		t.Error("the temporary file was left behind")
+	}
+}
+
+func TestSealedCacheOpensOnlyWithItsKey(t *testing.T) {
+	_, _ = sealedOnDisk(t)
+	logs := captureCacheLog(t)
+
+	cc := fresh()
+	if !loadCacheFromDisk("cal", cc, testKey) || len(cc.objects) != 2 {
+		t.Fatal("the right key must open it")
+	}
+
+	for name, key := range map[string]*[32]byte{"wrong key": otherKey(), "no key": nil} {
+		c := fresh()
+		if loadCacheFromDisk("cal", c, key) || c.loaded || len(c.objects) != 0 {
+			t.Fatalf("%s: a cache that cannot be opened must give nothing, got loaded=%v objects=%d", name, c.loaded, len(c.objects))
+		}
+	}
+	out := logs.String()
+	for _, want := range []string{"cannot be decrypted", "bridge password changed", "no key is available", "loaded from Proton"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestATamperedCacheIsRejectedNotServed(t *testing.T) {
+	path, raw := sealedOnDisk(t)
+	var env sealedFile
+	json.Unmarshal(raw, &env)
+	box := []byte(env.Sealed)
+	box[len(box)/2] ^= 1 // flip one bit of the base64 text, somewhere in the middle
+	env.Sealed = string(box)
+	tampered, _ := json.Marshal(env)
+	os.WriteFile(path, tampered, 0o600)
+
+	if loadCacheFromDisk("cal", fresh(), testKey) {
+		t.Fatal("a changed byte must make the cache unusable")
+	}
+}
+
+func TestEverySaveUsesAFreshNonce(t *testing.T) {
+	path, first := sealedOnDisk(t)
+	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a"), "b": unencodable("b")}), testKey)
+	second, _ := os.ReadFile(path)
+	if bytes.Equal(first, second) {
+		t.Fatal("saving the same calendar twice gave identical files: the nonce is being reused")
+	}
+}
+
+func TestWithoutAKeyNothingIsWritten(t *testing.T) {
+	home(t)
+	logs := captureCacheLog(t)
+	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a")}), nil)
+	path, _ := cacheFilePath("cal")
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("a plaintext cache must never be the fallback")
+	}
+	if _, err := os.Stat(path + ".tmp"); err == nil {
+		t.Fatal("a temporary file was written")
+	}
+	if !strings.Contains(logs.String(), "no key to encrypt") {
+		t.Errorf("say why nothing is saved:\n%s", logs.String())
+	}
+}
+
+func TestTheHandlerOptionSetsTheKey(t *testing.T) {
+	b := &backend{}
+	WithCacheKey(testKey)(b)
+	if b.cacheKey != testKey {
+		t.Fatal("WithCacheKey did not set the key")
 	}
 }
 
@@ -214,13 +338,13 @@ func TestNoBackupIsMadeOfANewFormatFile(t *testing.T) {
 func TestCacheCheckReportsAndChangesNothing(t *testing.T) {
 	home(t)
 	dir := filepath.Dir(mustPath(t, "x"))
-	saveCacheToDisk("good", cacheWith(map[string]*ical.Calendar{"a": event("a"), "b": unencodable("b")}))
+	saveCacheToDisk("good", cacheWith(map[string]*ical.Calendar{"a": event("a"), "b": unencodable("b")}), testKey)
 	writeLegacy(t, "old", map[string]string{"a": encodeText(t, event("a"))}, 1)
 	writeLegacy(t, "broken", map[string]string{"a": encodeText(t, event("a")), "b": "garbage without a separator\r\n"}, 2)
 	os.WriteFile(filepath.Join(dir, "calcache-junk.json"), []byte("not json"), 0o600)
 
 	before := snapshotDir(t, dir)
-	reports, err := CheckCacheDir(dir)
+	reports, err := CheckCacheDir(dir, func() (*[32]byte, error) { return testKey, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +371,7 @@ func TestCacheCheckReportsAndChangesNothing(t *testing.T) {
 		t.Errorf("junk = %+v", j)
 	}
 	out := all.String()
-	for _, want := range []string{"complete: 2 of 2", "INCOMPLETE: 1 of 2", "UNUSABLE", "Nothing is written to Proton", "rewritten as structure"} {
+	for _, want := range []string{"complete, encrypted: 2 of 2", "complete, NOT encrypted: 1 of 1", "INCOMPLETE: 1 of 2", "UNUSABLE", "Nothing is written to Proton", "rewritten as structure", "encrypted the next time"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -258,7 +382,7 @@ func TestCacheCheckReportsAndChangesNothing(t *testing.T) {
 }
 
 func TestCacheCheckOnAnEmptyDirectory(t *testing.T) {
-	reports, err := CheckCacheDir(t.TempDir())
+	reports, err := CheckCacheDir(t.TempDir(), nil)
 	if err != nil || len(reports) != 0 {
 		t.Fatalf("%v %v", reports, err)
 	}
@@ -315,4 +439,53 @@ func captureCacheLog(t *testing.T) *bytes.Buffer {
 	logSet(&buf)
 	t.Cleanup(func() { logSet(os.Stderr) })
 	return &buf
+}
+
+func TestCacheCheckOpensSealedCachesWithTheKeyAndAsksOnlyWhenNeeded(t *testing.T) {
+	home(t)
+	dir := filepath.Dir(mustPath(t, "x"))
+	saveCacheToDisk("sealed", cacheWith(map[string]*ical.Calendar{"a": event("a"), "b": event("b")}), testKey)
+
+	asked := 0
+	reports, _ := CheckCacheDir(dir, func() (*[32]byte, error) { asked++; return testKey, nil })
+	if asked != 1 || len(reports) != 1 || !reports[0].Complete() || !reports[0].Sealed || reports[0].Restored != 2 {
+		t.Fatalf("asked=%d reports=%+v", asked, reports)
+	}
+	if out := reports[0].String(); !strings.Contains(out, "complete, encrypted") || strings.Contains(out, "Secret event") {
+		t.Errorf("output:\n%s", out)
+	}
+
+	// a directory with no sealed file never asks for the password
+	plain := t.TempDir()
+	config.SetConfigHome(plain)
+	writeLegacy(t, "old", map[string]string{"a": encodeText(t, event("a"))}, 1)
+	asked = 0
+	rs, _ := CheckCacheDir(filepath.Dir(mustPath(t, "x")), func() (*[32]byte, error) { asked++; return testKey, nil })
+	if asked != 0 || !rs[0].Complete() || rs[0].Sealed {
+		t.Fatalf("asked=%d %+v", asked, rs)
+	}
+	if !strings.Contains(rs[0].String(), "NOT encrypted") {
+		t.Errorf("an unencrypted cache must be called that:\n%s", rs[0].String())
+	}
+}
+
+func TestCacheCheckWithAWrongOrMissingKeyChangesNothingAndSaysWhy(t *testing.T) {
+	home(t)
+	dir := filepath.Dir(mustPath(t, "x"))
+	saveCacheToDisk("sealed", cacheWith(map[string]*ical.Calendar{"a": event("a")}), testKey)
+	before := snapshotDir(t, dir)
+
+	for name, keyFn := range map[string]func() (*[32]byte, error){
+		"wrong key":     func() (*[32]byte, error) { return otherKey(), nil },
+		"no way to ask": nil,
+		"asking failed": func() (*[32]byte, error) { return nil, errors.New("no terminal") },
+	} {
+		reports, err := CheckCacheDir(dir, keyFn)
+		if err != nil || len(reports) != 1 || reports[0].Complete() || reports[0].Unusable == "" {
+			t.Fatalf("%s: %+v %v", name, reports, err)
+		}
+	}
+	if snapshotDir(t, dir) != before {
+		t.Fatal("the dry run changed the directory")
+	}
 }

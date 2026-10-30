@@ -2,7 +2,6 @@ package caldav
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -211,7 +210,7 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 			recent:  make(map[string]recentMutation),
 		}
 		b.caches[calID] = cc
-		loadCacheFromDisk(calID, cc) // logs what it restored, or why the calendar will be fetched again
+		loadCacheFromDisk(calID, cc, b.cacheKey) // logs what it restored, or why the calendar will be fetched again
 	}
 	// Start the calendar event-loop poller once per calendar, so inbound changes
 	// (events created/edited in Proton or on another device) are patched into the
@@ -398,7 +397,7 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 	cc.broadcastLocked()
 	cc.mu.Unlock()
 
-	saveCacheToDisk(calID, cc)
+	saveCacheToDisk(calID, cc, b.cacheKey)
 	log.Printf("cache %s: loaded %d events", calID, len(fresh))
 	logUnverifiedSignatures(calID)
 }
@@ -416,7 +415,7 @@ func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
 	// or mid reload). The write is held in memory and in the recent-writes overlay,
 	// so loadCache folds it into the full set it persists on completion.
 	if persist {
-		saveCacheToDisk(calID, cc)
+		saveCacheToDisk(calID, cc, b.cacheKey)
 	}
 }
 
@@ -431,7 +430,7 @@ func (b *backend) cacheDelete(calID, evtID string) {
 	persist := cc.loaded && !cc.loading
 	cc.mu.Unlock()
 	if persist {
-		saveCacheToDisk(calID, cc)
+		saveCacheToDisk(calID, cc, b.cacheKey)
 	}
 }
 
@@ -505,8 +504,16 @@ func (b *backend) findByToken(calID, token string) (caldav.CalendarObject, strin
 	return o, protonID, true
 }
 
-// saveCacheToDisk atomically writes the decrypted cache to the config directory.
-func saveCacheToDisk(calID string, cc *calendarCache) {
+// saveCacheToDisk atomically writes the cache, sealed with key, to the config directory.
+// Without a key nothing is written: the cache holds the decrypted calendar, and an
+// unencrypted copy is never the fallback.
+func saveCacheToDisk(calID string, cc *calendarCache, key *[32]byte) {
+	if key == nil {
+		noKeyOnce.Do(func() {
+			log.Printf("cache: not saving calendars to disk, because there is no key to encrypt them with")
+		})
+		return
+	}
 	path, err := cacheFilePath(calID)
 	if err != nil {
 		log.Printf("cache %s: cannot resolve cache path: %v", calID, err)
@@ -528,17 +535,10 @@ func saveCacheToDisk(calID string, cc *calendarCache) {
 	}
 	cc.mu.Unlock()
 
-	data, err := json.Marshal(pc)
+	data, err := sealCache(pc, key)
 	if err != nil {
-		log.Printf("cache %s: marshal failed: %v", calID, err)
+		log.Printf("cache %s: could not encrypt the cache: %v", calID, err)
 		return
-	}
-	// The first time a file written by an older version is replaced, keep that file once.
-	// The cache is rebuilt from Proton if it is lost, so this is only a safety net.
-	if _, err := os.Stat(path + ".bak"); os.IsNotExist(err) {
-		if old, err := os.ReadFile(path); err == nil && !bytes.Contains(old, []byte(`"Tree"`)) {
-			os.WriteFile(path+".bak", old, 0600)
-		}
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
@@ -547,8 +547,16 @@ func saveCacheToDisk(calID string, cc *calendarCache) {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		log.Printf("cache %s: rename failed: %v", calID, err)
+		return
+	}
+	// Version 0.6.1 kept a plaintext copy of an old cache once. An encrypted cache next to
+	// a readable copy of itself would be pointless, so it goes.
+	if err := os.Remove(path + ".bak"); err == nil {
+		log.Printf("cache %s: removed the unencrypted backup left by an earlier version", calID)
 	}
 }
+
+var noKeyOnce sync.Once
 
 // loadCacheFromDisk populates cc from a previously-saved cache file, if present.
 // restoreReport says what reading a cache file back gives.
@@ -595,7 +603,7 @@ func restoreObjects(pc persistedCache) (map[string]caldav.CalendarObject, restor
 	return objs, rep
 }
 
-func loadCacheFromDisk(calID string, cc *calendarCache) bool {
+func loadCacheFromDisk(calID string, cc *calendarCache, key *[32]byte) bool {
 	path, err := cacheFilePath(calID)
 	if err != nil {
 		return false
@@ -604,10 +612,15 @@ func loadCacheFromDisk(calID string, cc *calendarCache) bool {
 	if err != nil {
 		return false
 	}
-	var pc persistedCache
-	if err := json.Unmarshal(data, &pc); err != nil {
-		log.Printf("cache %s: on-disk cache unreadable, ignoring: %v", calID, err)
+	pc, sealed, err := openCacheFile(data, key)
+	if err != nil {
+		// Fail closed: a cache that cannot be opened is not used, and the calendar is
+		// loaded from Proton, which rebuilds and reseals it.
+		log.Printf("cache %s: on-disk cache not used, the calendar will be loaded from Proton: %v", calID, err)
 		return false
+	}
+	if !sealed {
+		log.Printf("cache %s: the on-disk cache is from a version that did not encrypt it; it is encrypted the next time it is saved", calID)
 	}
 
 	objs, rep := restoreObjects(pc)
