@@ -32,6 +32,8 @@ const (
 	// across all calendars and clients: at most four requests a second. It turns the
 	// burst of pollers that wake on the same tick into a short queue.
 	// (A variable so tests can turn it off.)
+	// maxSpacingQueue is the longest wait the request spacing may ever impose.
+	maxSpacingQueue = 30 * time.Second
 	// coolDown is how long after a limit the client stays conservative (one page at a
 	// time when listing a calendar).
 	coolDown = 10 * time.Minute
@@ -85,6 +87,12 @@ func (g *rateGate) reserve() time.Duration {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := rlNow()
+	// A queue this long cannot be real (it would be over a hundred requests waiting their
+	// turn), so it is corrupt state, for instance after a clock that jumped. Start over
+	// rather than make every request sleep for it.
+	if g.next.Sub(now) > maxSpacingQueue {
+		g.next = now
+	}
 	start := now
 	if g.next.After(start) {
 		start = g.next

@@ -178,6 +178,19 @@ inbound poll, Proton rate limiting us, (optionally) a long calendar load, a fail
   were unreadable and why. Caches from earlier versions are still read and are replaced by sealed
   ones (a `calcache-*.json.bak` left by version 0.6.1 is deleted). This only ever reads from Proton,
   nothing is written to it.
+- **Every event has to be sendable.** The CalDAV library encodes an event as iCalendar for every
+  response, and its encoder is strict (exactly one `UID` and `DTSTAMP`, at most one of many other
+  properties, no `DTEND` together with `DURATION`, no raw line break inside a value). An event
+  that fails is listed to the client but its data comes back as an error, so it never appears.
+  Events are therefore repaired from the encoder's own complaints, both as they are assembled from
+  Proton's cards and when a cache is restored: a missing `VERSION`, `PRODID`, `DTSTAMP` or `UID`
+  is filled in, the first of several single-value properties is kept, `DURATION` goes when `DTEND`
+  is there, line breaks inside a value are escaped. This changes the copy held here and nothing
+  is written to Proton. The log summarises what was repaired, and anything beyond repair, once per
+  load, with no event text.
+- **Repeated properties are all kept.** Merging an event's cards used to keep only the last value
+  of a property that appears more than once, so a recurring event lost all but one `EXDATE` (the
+  excluded occurrences came back) and an event lost all but one `ATTENDEE`.
 - **`caloxide cache-check`** is the dry run: it reads the cache files and reports, per calendar,
   how many events read back and whether the server would trust the file. It changes nothing,
   never contacts Proton, prints counts and error classes but never event text, and exits non-zero

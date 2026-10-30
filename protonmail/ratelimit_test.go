@@ -32,7 +32,8 @@ func useFakeClock(t *testing.T) *fakeClock {
 		fc.slept = append(fc.slept, d)
 		fc.mu.Unlock()
 	}
-	t.Cleanup(func() { rlNow, rlSleep = oldNow, oldSleep })
+	resetAllGates()
+	t.Cleanup(func() { rlNow, rlSleep = oldNow, oldSleep; resetAllGates() })
 	return fc
 }
 
@@ -68,6 +69,7 @@ func limitedServer(t *testing.T, limited int32, retryAfter string) (*Client, *at
 		fmt.Fprint(w, `{"Code":1000,"Calendars":[]}`)
 	}))
 	t.Cleanup(srv.Close)
+	freshGate(srv.URL)
 	c := &Client{RootURL: srv.URL, AppVersion: "Other"}
 	c.SetSession("u", "t")
 	return c, &hits
@@ -216,11 +218,32 @@ func TestSpacingQueuesConcurrentRequests(t *testing.T) {
 func TestListingAsksForOnePageAtATimeAfterALimit(t *testing.T) {
 	f := &fakeEvents{total: 600, delay: 20 * time.Millisecond, failPage: -1}
 	c := listClient(t, f)
+	t.Cleanup(resetAllGates)
 	c.rateGate().limit(time.Millisecond)
 	if _, err := c.ListAllCalendarEvents("cal", nil); err != nil {
 		t.Fatal(err)
 	}
 	if peak := f.peak.Load(); peak != 1 {
 		t.Fatalf("peak concurrency %d right after a rate limit, want 1", peak)
+	}
+}
+
+func TestSpacingNeverQueuesLongerThanTheCap(t *testing.T) {
+	old := minRequestSpacing
+	minRequestSpacing = 250 * time.Millisecond
+	defer func() { minRequestSpacing = old }()
+
+	g := &rateGate{next: time.Now().Add(10 * time.Hour)} // as left behind by a clock that jumped
+	if w := g.reserve(); w > time.Second {
+		t.Fatalf("a corrupt queue made a request wait %s", w)
+	}
+	// An honest queue is untouched.
+	h := &rateGate{}
+	var last time.Duration
+	for i := 0; i < 8; i++ {
+		last = h.reserve()
+	}
+	if last < 1500*time.Millisecond || last > 2200*time.Millisecond {
+		t.Fatalf("eight requests at once: the last waits %s, want about 1.75s", last)
 	}
 }

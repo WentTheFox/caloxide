@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -119,9 +120,23 @@ func TestAnEventTheEncoderRefusesNowSurvivesTheRoundTrip(t *testing.T) {
 	if !loadCacheFromDisk("cal", cc, testKey) || !cc.loaded || len(cc.objects) != 2 {
 		t.Fatalf("an event that cannot be written as text must still come back: loaded=%v objects=%d", cc.loaded, len(cc.objects))
 	}
+	// What is stored is exactly what was saved: nothing is lost on the way to disk...
+	path, _ := cacheFilePath("cal")
+	raw, _ := os.ReadFile(path)
+	pc, _, err := openCacheFile(raw, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored := pc.Objects["bad"].Tree.Children[0].Props.Values(ical.PropDateTimeStart); len(stored) != 2 || stored[1].Value != "20260106T100000Z" {
+		t.Fatalf("the stored event is not what was saved: %+v", stored)
+	}
+	// ... and what is restored is repaired so that it can be served (see makeEncodable).
 	got := cc.objects["bad"].Data.Children[0].Props.Values(ical.PropDateTimeStart)
-	if len(got) != 2 || got[1].Value != "20260106T100000Z" {
-		t.Fatalf("the event came back changed: %+v", got)
+	if len(got) != 1 || got[0].Value != "20260105T100000Z" {
+		t.Fatalf("the restored event should keep its first DTSTART: %+v", got)
+	}
+	if err := encodes(cc.objects["bad"].Data); err != nil {
+		t.Fatalf("the restored event still cannot be served: %v", err)
 	}
 }
 
@@ -311,6 +326,7 @@ func TestEverySaveUsesAFreshNonce(t *testing.T) {
 
 func TestWithoutAKeyNothingIsWritten(t *testing.T) {
 	home(t)
+	noKeyOnce = sync.Once{} // the warning is logged once per process; this test needs to see it
 	logs := captureCacheLog(t)
 	saveCacheToDisk("cal", cacheWith(map[string]*ical.Calendar{"a": event("a")}), nil)
 	path, _ := cacheFilePath("cal")

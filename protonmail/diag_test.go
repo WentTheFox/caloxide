@@ -53,6 +53,7 @@ func TestRedactedHeadersHideCredentials(t *testing.T) {
 func serve(t *testing.T, h http.HandlerFunc) *Client {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
+	freshGate(srv.URL)
 	c := &Client{RootURL: srv.URL, AppVersion: "Other"}
 	c.SetSession("u", "t")
 	return c

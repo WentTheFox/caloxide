@@ -64,6 +64,7 @@ func (f *fakeEvents) handler() http.HandlerFunc {
 func listClient(t *testing.T, f *fakeEvents) *Client {
 	srv := httptest.NewServer(f.handler())
 	t.Cleanup(srv.Close)
+	freshGate(srv.URL)
 	c := &Client{RootURL: srv.URL, AppVersion: "Other"}
 	c.SetSession("u", "t")
 	return c

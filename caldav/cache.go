@@ -400,6 +400,7 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 	saveCacheToDisk(calID, cc, b.cacheKey)
 	log.Printf("cache %s: loaded %d events", calID, len(fresh))
 	logUnverifiedSignatures(calID)
+	logServing(calID)
 }
 
 func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
@@ -568,13 +569,20 @@ type restoreReport struct {
 	FromText int            // ... of which from iCalendar text
 	Repaired int            // ... of which needed the repair for text from Proton
 	Failed   map[string]int // error class -> events that could not be read back
+
+	// Whether the restored events can be handed to a client (see makeEncodable).
+	Fixed          int            // events that needed a repair to be served, and got it
+	FixedKinds     map[string]int // repair -> events
+	Unservable     int            // events that still do not encode after the repair
+	UnservableKind map[string]int // error class -> events
 }
 
 func (r restoreReport) Complete() bool { return r.Restored == r.Want }
 
 // restoreObjects reads the events of a cache file back.
 func restoreObjects(pc persistedCache) (map[string]caldav.CalendarObject, restoreReport) {
-	rep := restoreReport{Entries: len(pc.Objects), Want: pc.Count, Failed: map[string]int{}}
+	rep := restoreReport{Entries: len(pc.Objects), Want: pc.Count, Failed: map[string]int{},
+		FixedKinds: map[string]int{}, UnservableKind: map[string]int{}}
 	if rep.Want < rep.Entries {
 		rep.Want = rep.Entries
 	}
@@ -595,6 +603,27 @@ func restoreObjects(pc persistedCache) (map[string]caldav.CalendarObject, restor
 			rep.FromText++
 			if repaired {
 				rep.Repaired++
+			}
+		}
+		// Events cached by an earlier version may not encode, which the server needs for
+		// every response. The uid and time to fall back on come from the event itself.
+		facts := eventFacts{stamp: po.ModTime}
+		if len(data.Children) > 0 {
+			if uid := data.Children[0].Props.Get(ical.PropUID); uid != nil {
+				facts.uid = uid.Value
+			}
+		}
+		if repairs, err := makeEncodable(data, facts); err != nil {
+			rep.Unservable++
+			rep.UnservableKind[errorClass(err)]++
+		} else if len(repairs) > 0 {
+			rep.Fixed++
+			seen := map[string]bool{}
+			for _, r := range repairs {
+				if !seen[r] {
+					seen[r] = true
+					rep.FixedKinds[r]++
+				}
 			}
 		}
 		objs[id] = caldav.CalendarObject{Path: po.Path, ETag: po.ETag, ModTime: po.ModTime, Data: data}
@@ -635,6 +664,13 @@ func loadCacheFromDisk(calID string, cc *calendarCache, key *[32]byte) bool {
 	cc.loaded = complete
 	cc.mu.Unlock()
 
+	if rep.Fixed > 0 {
+		log.Printf("cache %s: %d restored event(s) needed repair to be served to clients: %s", calID, rep.Fixed, countsSummary(rep.FixedKinds))
+	}
+	if rep.Unservable > 0 {
+		log.Printf("cache %s: %d restored event(s) cannot be served to clients, because they do not encode as iCalendar; loading the calendar from Proton again may fix them (%s)",
+			calID, rep.Unservable, countsSummary(rep.UnservableKind))
+	}
 	if complete {
 		log.Printf("cache %s: restored %d events from disk", calID, rep.Restored)
 	} else {

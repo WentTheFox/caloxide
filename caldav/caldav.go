@@ -159,11 +159,7 @@ func readEventCard(event *ical.Event, eventCard protonmail.CalendarEventCard, us
 	}
 	decodedEvent := &children[0]
 
-	for _, props := range decodedEvent.Props {
-		for _, p := range props {
-			event.Props.Set(&p)
-		}
-	}
+	mergeProps(event.Props, decodedEvent.Props)
 
 	return decoded.Props, nil
 }
@@ -176,9 +172,7 @@ func toIcalCalendar(event *protonmail.CalendarEvent, userKr openpgp.KeyRing, cal
 		if propsMap, err := readEventCard(merged, card, userKr, calKr, event.SharedKeyPacket); err != nil {
 			return nil, fmt.Errorf("caldav/toIcalCalendar: error reading shared event card: (%w)", err)
 		} else {
-			for name := range propsMap {
-				calProps.Set(propsMap.Get(name))
-			}
+			mergeProps(calProps, propsMap)
 		}
 	}
 
@@ -186,9 +180,7 @@ func toIcalCalendar(event *protonmail.CalendarEvent, userKr openpgp.KeyRing, cal
 		if propsMap, err := readEventCard(merged, card, userKr, calKr, event.CalendarKeyPacket); err != nil {
 			return nil, fmt.Errorf("caldav/toIcalCalendar: error reading calendar event card: (%w)", err)
 		} else {
-			for name := range propsMap {
-				calProps.Set(propsMap.Get(name))
-			}
+			mergeProps(calProps, propsMap)
 		}
 	}
 
@@ -209,6 +201,14 @@ func toIcalCalendar(event *protonmail.CalendarEvent, userKr openpgp.KeyRing, cal
 
 	utils.MapCopy(cal.Props, calProps)
 	cal.Children = append(cal.Children, merged.Component)
+
+	// The encoder is strict and every client request runs it; see makeEncodable.
+	facts := eventFacts{uid: event.UID, stamp: time.Unix(int64(event.LastEditTime), 0)}
+	if event.LastEditTime == 0 {
+		facts.stamp = time.Unix(int64(event.CreateTime), 0)
+	}
+	repairs, err := makeEncodable(cal, facts)
+	noteServing(repairs, err)
 
 	return cal, nil
 }

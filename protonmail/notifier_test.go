@@ -76,6 +76,7 @@ func newFakeNotifier(t *testing.T, status int) *fakeNotifier {
 }
 
 func (f *fakeNotifier) client() *Client {
+	freshGate(f.srv.URL)
 	c := &Client{RootURL: f.srv.URL, AppVersion: "Other"}
 	c.SetSession("uid1", "tok1")
 	return c

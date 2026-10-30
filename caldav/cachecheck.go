@@ -11,18 +11,22 @@ import (
 
 // CacheFileReport describes one on-disk calendar cache, as the server would read it.
 type CacheFileReport struct {
-	File     string         `json:"file"`
-	Calendar string         `json:"calendar"`
-	Bytes    int64          `json:"bytes"`
-	Entries  int            `json:"entries"`
-	Want     int            `json:"want"`
-	Restored int            `json:"restored"`
-	FromTree int            `json:"from_tree"`
-	FromText int            `json:"from_text"`
-	Repaired int            `json:"repaired"`
-	Failed   map[string]int `json:"failed,omitempty"`
-	Sealed   bool           `json:"sealed"`
-	Unusable string         `json:"unusable,omitempty"` // the file could not be read at all
+	File           string         `json:"file"`
+	Calendar       string         `json:"calendar"`
+	Bytes          int64          `json:"bytes"`
+	Entries        int            `json:"entries"`
+	Want           int            `json:"want"`
+	Restored       int            `json:"restored"`
+	FromTree       int            `json:"from_tree"`
+	FromText       int            `json:"from_text"`
+	Repaired       int            `json:"repaired"`
+	Fixed          int            `json:"fixed"`      // events a client could not be sent as stored, repaired on restore
+	Unservable     int            `json:"unservable"` // events that still cannot be sent
+	Failed         map[string]int `json:"failed,omitempty"`
+	FixedKinds     map[string]int `json:"fixed_kinds,omitempty"`
+	UnservableKind map[string]int `json:"unservable_kinds,omitempty"`
+	Sealed         bool           `json:"sealed"`
+	Unusable       string         `json:"unusable,omitempty"` // the file could not be read at all
 }
 
 // CheckCacheDir reads every calendar cache in dir and reports what reading it back gives.
@@ -78,6 +82,8 @@ func CheckCacheDir(dir string, keyFn func() (*[32]byte, error)) ([]CacheFileRepo
 		_, r := restoreObjects(pc)
 		rep.Entries, rep.Want, rep.Restored = r.Entries, r.Want, r.Restored
 		rep.FromTree, rep.FromText, rep.Repaired, rep.Failed = r.FromTree, r.FromText, r.Repaired, r.Failed
+		rep.Fixed, rep.Unservable = r.Fixed, r.Unservable
+		rep.FixedKinds, rep.UnservableKind = r.FixedKinds, r.UnservableKind
 		out = append(out, rep)
 	}
 	return out, nil
@@ -124,6 +130,14 @@ func (r CacheFileReport) String() string {
 			fmt.Fprintf(&sb, "    Why: %s\n", failureSummary(r.Failed))
 		} else {
 			sb.WriteString("    Why: the file holds fewer events than it says it had been given to save.\n")
+		}
+	}
+	if r.Unusable == "" {
+		if r.Fixed > 0 {
+			fmt.Fprintf(&sb, "    %s event(s) could not be sent to a client as stored and are repaired when loaded: %s\n", thousands(r.Fixed), countsSummary(r.FixedKinds))
+		}
+		if r.Unservable > 0 {
+			fmt.Fprintf(&sb, "    %s event(s) cannot be sent to a client at all (they do not encode as iCalendar): %s\n", thousands(r.Unservable), countsSummary(r.UnservableKind))
 		}
 	}
 	return sb.String()
