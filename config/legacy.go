@@ -8,10 +8,10 @@ import (
 	"sync"
 )
 
-// The project was called protoxide before it was renamed to caloxide. So that an
-// existing deployment keeps working through the rename, the old environment variable
-// names and the old config directory are still honoured, with a log line asking for
-// the new names. The new name always wins.
+// Upstream (mathewcsims/protoxide) uses PROTOXIDE_* environment variables and a
+// protoxide state directory. Both are still honoured, so caloxide can replace an
+// existing upstream installation without touching its configuration or state. The
+// CALOXIDE_* name and the caloxide directory always win when present.
 const (
 	envPrefix       = "CALOXIDE_"
 	legacyEnvPrefix = "PROTOXIDE_"
@@ -39,7 +39,7 @@ func Getenv(name string) string {
 	old := legacyEnvPrefix + strings.TrimPrefix(name, envPrefix)
 	v := os.Getenv(old)
 	if v != "" {
-		warnOnce(old, "%s is the old name of %s and is still read; rename it before the next release", old, name)
+		warnOnce(old, "%s is still read as a fallback for %s; the CALOXIDE_ name is preferred", old, name)
 	}
 	return v
 }
@@ -53,7 +53,7 @@ func appDir(home string) string {
 	}
 	legacy := filepath.Join(home, legacyDirName)
 	if fi, err := os.Stat(legacy); err == nil && fi.IsDir() {
-		warnOnce("dir", "using the old state directory %s; rename it to %s to finish the rename", legacy, current)
+		warnOnce("dir", "using the existing state directory %s; a new one would be created at %s", legacy, current)
 		return legacy
 	}
 	return current

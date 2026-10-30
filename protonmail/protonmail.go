@@ -93,6 +93,9 @@ type Client struct {
 	// the re-authentication logic stop a client from hammering Proton with a dead
 	// token while it waits for a human. Detached clients never have one.
 	Gate func() error
+	// OnRateLimited, if set, is told when Proton asks us to slow down and for how long.
+	// It is called from the request path and must not block.
+	OnRateLimited func(pause time.Duration)
 
 	// credsMu guards uid and accessToken: the event poller, request handlers and
 	// the re-authentication hand-over (AdoptSession) all use one client.
@@ -110,7 +113,7 @@ type Client struct {
 // own (Unlock), and on a 401 they would otherwise call ReAuth again from inside
 // ReAuth, recursing until the stack overflows (or deadlocking on a lock).
 func (c *Client) Detached() *Client {
-	return &Client{RootURL: c.RootURL, AppVersion: c.AppVersion, UserAgent: c.UserAgent, Debug: c.Debug, HTTPClient: c.HTTPClient}
+	return &Client{RootURL: c.RootURL, AppVersion: c.AppVersion, UserAgent: c.UserAgent, Debug: c.Debug, HTTPClient: c.HTTPClient, OnRateLimited: c.OnRateLimited}
 }
 
 // AdoptSession takes over the authenticated session and unlocked keys of d, a
@@ -222,7 +225,7 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 		httpClient = http.DefaultClient
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := c.sendRateLimited(httpClient, req)
 	if err != nil {
 		return resp, err
 	}
@@ -266,7 +269,17 @@ func (c *Client) doJSON(req *http.Request, respData interface{}) error {
 	}
 	defer resp.Body.Close()
 
-	if err := json.NewDecoder(resp.Body).Decode(respData); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if why := unexpectedStatus(resp.StatusCode); why != "" {
+		logUnexpected(req, resp, body, why)
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(respData); err != nil {
+		if unexpectedStatus(resp.StatusCode) == "" {
+			logUnexpected(req, resp, body, "undecodable body")
+		}
 		return err
 	}
 

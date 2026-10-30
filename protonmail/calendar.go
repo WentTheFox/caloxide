@@ -445,39 +445,86 @@ func (c *Client) ListCalendarEvents(calendarID string, filter *CalendarEventFilt
 // yields no events the previous pages didn't already return — which both catches
 // the true end and prevents an infinite loop if the server ignores the Page
 // parameter and keeps returning the same events. A hard page cap is a backstop.
+// Listing a big calendar is latency-bound, not CPU-bound: every page of 100 events
+// takes seconds to come back from Proton while decrypting a whole calendar takes about
+// a second. So pages are requested a few at a time. listWindow bounds the pages in
+// flight for one calendar, listSlots bounds them across all calendars loading at once,
+// so a cold start with several big calendars stays polite towards Proton.
+const listWindow = 2
+
+var listSlots = make(chan struct{}, 3)
+
+// ListAllCalendarEvents returns every event of a calendar by following its pages.
+// Results are consumed in page order, so the outcome is the same as fetching the pages
+// one by one; at most listWindow-1 pages past the last one are requested needlessly.
 func (c *Client) ListAllCalendarEvents(calendarID string, filter *CalendarEventFilter) ([]*CalendarEvent, error) {
 	const pageSize = 100
 	const maxPages = 200
 
-	var f CalendarEventFilter
+	var base CalendarEventFilter
 	if filter != nil {
-		f = *filter
+		base = *filter
 	}
-	f.PageSize = pageSize
-	f.Page = 0
+	base.PageSize = pageSize
+
+	type pageResult struct {
+		events []*CalendarEvent
+		err    error
+	}
+	fetch := func(n int) chan pageResult {
+		ch := make(chan pageResult, 1) // buffered: a page nobody waits for any more must not leak a goroutine
+		f := base
+		f.Page = n
+		go func() {
+			listSlots <- struct{}{}
+			defer func() { <-listSlots }()
+			page, err := c.ListCalendarEvents(calendarID, &f)
+			ch <- pageResult{page, err}
+		}()
+		return ch
+	}
+
+	// After Proton has limited us recently, ask for one page at a time.
+	window := func() int {
+		if c.rateGate().cooling() {
+			return 1
+		}
+		return listWindow
+	}
+
+	var pending []chan pageResult
+	next := 0
+	for len(pending) < window() && next < maxPages {
+		pending = append(pending, fetch(next))
+		next++
+	}
 
 	var all []*CalendarEvent
 	seen := make(map[string]bool)
-	for f.Page < maxPages {
-		page, err := c.ListCalendarEvents(calendarID, &f)
-		if err != nil {
-			return nil, err
+	for pageNo := 0; len(pending) > 0; pageNo++ {
+		r := <-pending[0]
+		pending = pending[1:]
+		if r.err != nil {
+			return nil, r.err
 		}
 
 		newCount := 0
-		for _, e := range page {
+		for _, e := range r.events {
 			if !seen[e.ID] {
 				seen[e.ID] = true
 				all = append(all, e)
 				newCount++
 			}
 		}
-		log.Printf("calendar %s page %d: %d events, %d new (running total %d)", calendarID, f.Page, len(page), newCount, len(all))
+		log.Printf("calendar %s page %d: %d events, %d new (running total %d)", calendarID, pageNo, len(r.events), newCount, len(all))
 
-		if len(page) < pageSize || newCount == 0 {
+		if len(r.events) < pageSize || newCount == 0 {
 			return all, nil
 		}
-		f.Page++
+		for len(pending) < window() && next < maxPages {
+			pending = append(pending, fetch(next))
+			next++
+		}
 	}
 	return all, nil
 }

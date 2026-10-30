@@ -12,8 +12,7 @@ It is a pinned, audited fork of [`mathewcsims/protoxide`](https://github.com/mat
 [`emersion/hydroxide`](https://github.com/emersion/hydroxide)): third-party, open-source
 bridges that speak Proton's internal API locally and re-expose it over standard
 protocols. Caloxide narrows the focus to the calendar path and adds what is needed to run
-it unattended on a server. It was called *protoxide* until October 2026, see
-[Renamed from protoxide](#renamed-from-protoxide).
+it unattended on a server.
 
 Proton Calendar has no CalDAV and no public API, because of its end-to-end encryption.
 Live, writable desktop access needs a local process that holds your session, does the PGP
@@ -122,7 +121,9 @@ it are in [`docs/design/unattended-reauth.md`](docs/design/unattended-reauth.md)
 ## Configuration
 
 State lives in `<config-home>/caloxide/` (`auth.json`, `calcache-*.json`, the control
-socket). `-config-home` sets it; the image uses `/data`.
+socket). `-config-home` sets it; the image uses `/data`. To be a drop-in replacement for
+upstream, `PROTOXIDE_*` variables and an existing `protoxide` state directory are still
+honoured when their `CALOXIDE_*` / `caloxide` counterparts are absent.
 
 | Setting | Meaning |
 | --- | --- |
@@ -139,7 +140,7 @@ Run `caloxide -h` for all of them and the commands (`auth`, `caldav`, `verify`, 
 `push-probe`, and the inherited mail ones).
 
 Alerts are sent for: a rejected CalDAV login (usually an expired session), a stalled
-inbound poll, a failed calendar write, a handler panic, a re-login that needs you, and
+inbound poll, Proton rate limiting us, a failed calendar write, a handler panic, a re-login that needs you, and
 (macOS service only) a crash.
 
 ## Sync behaviour
@@ -154,8 +155,22 @@ inbound poll, a failed calendar write, a handler panic, a re-login that needs yo
   pings will wake the pollers and the safety-net poll relaxes to 5 minutes by itself.
   Details and how to check: [`FORK.md`](FORK.md). `caloxide push-probe <address>` prints
   what the channel does, read-only.
-- **Cold start** (first run, or after deleting the cache) fetches and decrypts the whole
-  calendar, which takes minutes for thousands of events.
+- **Cold start** (first run, or after deleting the cache) fetches the whole calendar and
+  decrypts it. The wait is almost all network latency (100 events per page, seconds per
+  page; decrypting 700 events takes about a second), so up to two pages per calendar and
+  three overall are fetched at once. Until a calendar is loaded the server answers
+  `503`, and clients retry.
+- **Rate limits are shared.** Proton does not publish its limits, so every request to the
+  API goes through one budget for the whole process, whichever calendar it is for: at most
+  four request starts a second, and when Proton answers `429` (or `503` with `Retry-After`)
+  all requests pause for the time it names (or 10, 20, 40 s without one), retrying at most
+  three times. A pause longer than two minutes fails requests at once without contacting
+  Proton. After any limit, calendars load one page at a time for ten minutes. You get an
+  alert the first time it happens.
+- **Unexpected responses are logged** with status, headers and body (`unexpected response:
+  ...` lines), so they can be understood later. Cookies, tokens and other credentials are
+  blanked, JSON strings over 80 characters are replaced by their length, bodies are cut at
+  4 KiB, and query strings are never logged.
 
 ## Limitations
 
@@ -218,19 +233,6 @@ service before running a manual session, since only one process can bind `127.0.
 - `third_party/go-webdav`: vendored v0.6.0 with a small patch to emit the CTag, see
   [`CALOXIDE-PATCH.md`](third_party/go-webdav/CALOXIDE-PATCH.md).
 
-## Renamed from protoxide
-
-The project was renamed in October 2026. Existing deployments keep working for now:
-
-- `PROTOXIDE_*` environment variables are still read when the `CALOXIDE_*` one is unset
-  (a log line asks you to rename them).
-- A state directory named `protoxide` is still used when no `caloxide` one exists.
-- Images before the rename are at `ghcr.io/wentthefox/protoxide`; new ones are at
-  `ghcr.io/wentthefox/caloxide` (a different package, so the digest changes).
-- The Go module path is unchanged (`github.com/mathewcsims/protoxide`) so that reviewing
-  upstream changes stays simple.
-- The LaunchAgent label changed; re-run `./service/install.sh`.
-
 ## Changes from upstream
 
 Beyond the original write-path, decryption and pagination fixes (create/edit round-trip,
@@ -239,7 +241,7 @@ the on-disk cache, event-loop delta sync and CTag; the unattended re-login with 
 credentials and TOTP; the bounded recursion and request gate that stop a dead session
 from hammering Proton; the CAPTCHA verification window; Discord alerts; persistent
 Proton cookies; the dormant push client; the removed-calendar handling; the container
-image, release binaries and audit guardrails; and the rename.
+image, release binaries and audit guardrails.
 
 ## License
 

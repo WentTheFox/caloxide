@@ -48,7 +48,7 @@ PATTERNS=(
   'os/exec|exec\.Command'
   'net\.(Dial|DialTimeout|Listen|ListenPacket|LookupHost|LookupIP|LookupAddr|LookupTXT|LookupCNAME)'
   'tls\.(Dial|Listen)'
-  'http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)'
+  'http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport)\b|http\.(Client|Transport|Server)\{'
   'InsecureSkipVerify'
   'syscall\.'
   'unsafe\.'

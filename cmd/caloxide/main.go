@@ -105,6 +105,10 @@ func newClient() *protonmail.Client {
 		UserAgent:  userAgent,
 		Debug:      debug,
 		HTTPClient: httpClient,
+		OnRateLimited: func(pause time.Duration) {
+			notify.Send("warning", "rate-limited", "caloxide: Proton is rate limiting us",
+				fmt.Sprintf("Proton asked for a pause of %s. Every request waits for it; inbound sync is delayed meanwhile. The response is in the log.", pause.Round(time.Second)))
+		},
 	}
 }
 

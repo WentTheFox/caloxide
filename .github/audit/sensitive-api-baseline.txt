@@ -1,11 +1,11 @@
 # Reviewed baseline: <pattern><TAB><file>. New pairs fail .github/scripts/audit-source.sh.
 # Regenerate with: .github/scripts/audit-source.sh --update-baseline  (then READ the diff).
 binary	caloxide-logo.png
-http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	auth/auth.go
-http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	cmd/caloxide/humanverify.go
-http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	cmd/caloxide/main.go
-http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	notify/notify.go
-http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport|Client\{|Transport\{|Server\{)	protonmail/protonmail.go
+http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport)\b|http\.(Client|Transport|Server)\{	auth/auth.go
+http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport)\b|http\.(Client|Transport|Server)\{	cmd/caloxide/humanverify.go
+http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport)\b|http\.(Client|Transport|Server)\{	cmd/caloxide/main.go
+http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport)\b|http\.(Client|Transport|Server)\{	notify/notify.go
+http\.(Get|Post|PostForm|Head|NewRequest|NewRequestWithContext|ListenAndServe|ListenAndServeTLS|DefaultClient|DefaultTransport)\b|http\.(Client|Transport|Server)\{	protonmail/protonmail.go
 net\.(Dial|DialTimeout|Listen|ListenPacket|LookupHost|LookupIP|LookupAddr|LookupTXT|LookupCNAME)	cmd/caloxide/humanverify.go
 net\.(Dial|DialTimeout|Listen|ListenPacket|LookupHost|LookupIP|LookupAddr|LookupTXT|LookupCNAME)	webverify/control.go
 os/exec|exec\.Command	cmd/caloxide/humanverify.go

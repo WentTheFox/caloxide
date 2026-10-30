@@ -229,6 +229,10 @@ func (n *Notifier) session(ctx context.Context) error {
 		}
 	}
 
+	if d := c.rateGate().remaining(); d > 0 {
+		return &RateLimitedError{RetryAfter: d}
+	}
+
 	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		return err
@@ -244,7 +248,12 @@ func (n *Notifier) session(ctx context.Context) error {
 		return &notifierStatusError{status: resp.StatusCode, body: "token refreshed"}
 	}
 	if resp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		body := readBounded(resp.Body)
+		logUnexpected(req, resp, body, "event stream refused")
+		snippet := body
+		if len(snippet) > 256 {
+			snippet = snippet[:256]
+		}
 		return &notifierStatusError{status: resp.StatusCode, body: strings.TrimSpace(string(snippet))}
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
