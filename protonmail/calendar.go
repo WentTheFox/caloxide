@@ -1261,9 +1261,24 @@ func (c *Client) DeleteCalendarEvent(calID string, eventID string) error {
 		return fmt.Errorf("DeleteCalendarEvent: could not create JSON request: (%w)", err)
 	}
 
-	if _, err := c.do(req); err != nil {
-		return fmt.Errorf("DeleteCalendarEvent: could not send JSON request: (%w)", err)
+	// doJSON reads Proton's answer: an HTTP error or an API error code is an error. The
+	// sync endpoint answers with the code of the whole request and one code per entry.
+	var respData struct {
+		resp
+		Responses []struct {
+			Response struct {
+				Code  int
+				Error string
+			}
+		}
 	}
-
+	if err := c.doJSON(req, &respData); err != nil {
+		return fmt.Errorf("DeleteCalendarEvent: %w", err)
+	}
+	for _, r := range respData.Responses {
+		if r.Response.Code != 0 && r.Response.Code != 1000 {
+			return fmt.Errorf("DeleteCalendarEvent: Proton refused to delete the event: [%d] %s", r.Response.Code, r.Response.Error)
+		}
+	}
 	return nil
 }

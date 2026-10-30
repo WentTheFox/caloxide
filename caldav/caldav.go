@@ -300,11 +300,8 @@ func objectToken(data *ical.Calendar, fallback string) string {
 	if uidProp == nil || uidProp.Value == "" {
 		return safeSegment(fallback)
 	}
-	token := safeSegment(uidProp.Value)
-	if rid := events[0].Props.Get(ical.PropRecurrenceID); rid != nil && rid.Value != "" {
-		token += "~" + safeSegment(rid.Value)
-	}
-	return token
+	// The UID alone: a series and its edited occurrences are one resource (see series.go).
+	return safeSegment(uidProp.Value)
 }
 
 // safeSegment returns s if it is usable verbatim as a single URL path segment and
@@ -528,6 +525,10 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 	return out, nil
 }
 
+// errSeriesEdit answers a write that would have to change several Proton events at once.
+var errSeriesEdit = webdav.NewHTTPError(http.StatusForbidden,
+	fmt.Errorf("caldav: a recurring series with edited occurrences cannot be changed through caloxide yet; change it in Proton Calendar"))
+
 func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *caldav.PutCalendarObjectOptions) (loc *caldav.CalendarObject, err error) {
 	//TODO: maybe impl opts?
 	//TODO: attendees maybe
@@ -548,7 +549,22 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 
 	events := calendar.Events()
 	if len(events) != 1 {
-		return nil, fmt.Errorf("caldav/PutCalendarObject: expected PUT VCALENDAR to have exactly one VEVENT")
+		log.Printf("caldav/PutCalendarObject: refused a write of %d components to %s: a series with edited occurrences cannot be changed through caloxide yet", len(events), token)
+		return nil, errSeriesEdit
+	}
+	// A resource that already holds a series with edited occurrences, or one that would turn
+	// a series into an occurrence (or the reverse), would have to be split into several Proton
+	// events. That is not supported yet; it is refused rather than guessed at, so nothing in
+	// the calendar can be damaged by it.
+	if g, found := b.findGroup(calId, token); found {
+		incoming := ""
+		if p := events[0].Props.Get(ical.PropRecurrenceID); p != nil {
+			incoming = p.Value
+		}
+		if len(g.ids) > 1 || incoming != eventRID(g.obj) {
+			log.Printf("caldav/PutCalendarObject: refused a write to %s (%d event(s) in the resource): it would split or merge a series with edited occurrences, which caloxide cannot do yet", token, len(g.ids))
+			return nil, errSeriesEdit
+		}
 	}
 
 	// UpdateCalendarEvent mutates the event it is given while building Proton's
@@ -631,18 +647,24 @@ func (b *backend) DeleteCalendarObject(ctx context.Context, path string) error {
 
 	calId, token := splitIds[0], splitIds[1]
 
-	// Resolve the UID path token to the Proton event ID the delete API needs.
-	// Fall back to treating the token itself as the ID (legacy / uncached).
-	evtId := token
-	if _, protonID, ok := b.findByToken(calId, token); ok {
-		evtId = protonID
+	// Resolve the UID path token to the Proton events the delete API needs: one for an
+	// ordinary event, several for a series with edited occurrences, which a client deletes as
+	// one resource. The occurrences go first and the series last. Fall back to treating the
+	// token itself as the ID (legacy / uncached).
+	ids := []string{token}
+	if g, ok := b.findGroup(calId, token); ok {
+		ids = make([]string, 0, len(g.ids))
+		for i := len(g.ids) - 1; i >= 0; i-- {
+			ids = append(ids, g.ids[i])
+		}
 	}
 
-	if err := b.c.DeleteCalendarEvent(calId, evtId); err != nil {
-		return fmt.Errorf("caldav/DeleteCalendarObject: error deleting calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
+	for _, evtId := range ids {
+		if err := b.c.DeleteCalendarEvent(calId, evtId); err != nil {
+			return fmt.Errorf("caldav/DeleteCalendarObject: error deleting calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
+		}
+		b.cacheDelete(calId, evtId)
 	}
-
-	b.cacheDelete(calId, evtId)
 	return nil
 }
 

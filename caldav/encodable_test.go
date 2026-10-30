@@ -420,7 +420,7 @@ func TestTheDryRunReportsSharedAddresses(t *testing.T) {
 	if r.SharedAddresses != 1 || r.SharedEvents != 2 {
 		t.Fatalf("%+v", r)
 	}
-	if out := r.String(); !strings.Contains(out, "1 address(es) are shared by 2 events") || strings.Contains(out, "dup") {
+	if out := r.String(); !strings.Contains(out, "1 place(s) in a series are claimed by 2 events") || strings.Contains(out, "dup") {
 		t.Errorf("output:\n%s", out)
 	}
 }
@@ -457,7 +457,7 @@ func TestTheDryRunReportsSplitSeries(t *testing.T) {
 	if r.SplitSeries != 1 || r.SplitEvents != 2 || r.EditedOccurences != 1 {
 		t.Fatalf("%+v", r)
 	}
-	if out := r.String(); !strings.Contains(out, "1 recurring series are served as several resources (2 events in all, 1 edited occurrences)") {
+	if out := r.String(); !strings.Contains(out, "1 recurring series have edited occurrences (2 events in all, 1 edited occurrences), each served as one resource") {
 		t.Errorf("output:\n%s", out)
 	}
 }

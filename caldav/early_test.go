@@ -19,7 +19,6 @@ func loadingBackend(early bool, n int) (*backend, *calendarCache) {
 	b := &backend{caches: map[string]*calendarCache{}, earlySync: early, username: "me@example.com"}
 	cc := &calendarCache{
 		objects:     map[string]caldav.CalendarObject{},
-		byToken:     map[string]string{},
 		recent:      map[string]recentMutation{},
 		loading:     true,
 		loadStarted: time.Now().Add(-90 * time.Second),
@@ -57,6 +56,7 @@ func TestEarlySyncOnServesWhatHasBeenDecoded(t *testing.T) {
 
 	cc.mu.Lock()
 	cc.objects["z"] = obj("/caldav/calendars/cal/z.ics")
+	cc.changedLocked() // as every real write to the event map does
 	cc.mu.Unlock()
 	if second := b.cacheCTag("cal"); second == first {
 		t.Fatal("the CTag must change as events are decoded")

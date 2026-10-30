@@ -48,7 +48,7 @@ func cacheWith(objs map[string]*ical.Calendar) *calendarCache {
 }
 
 func fresh() *calendarCache {
-	return &calendarCache{objects: map[string]caldav.CalendarObject{}, byToken: map[string]string{}, recent: map[string]recentMutation{}}
+	return &calendarCache{objects: map[string]caldav.CalendarObject{}, recent: map[string]recentMutation{}}
 }
 
 func encodeText(t *testing.T, cal *ical.Calendar) string {

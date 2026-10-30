@@ -54,7 +54,7 @@ func httpFixture(t *testing.T, events map[string]*ical.Calendar) (*wdcaldav.Hand
 		cc.objects[id] = caldav.CalendarObject{Path: p, ETag: "E" + id, ModTime: time.Unix(1700000000, 0), Data: d}
 		paths[id] = p
 	}
-	cc.byToken = buildTokenIndex(cc.objects)
+	cc.changedLocked()
 	b.caches["cal"] = cc
 	return &wdcaldav.Handler{Backend: b}, paths
 }
@@ -125,8 +125,10 @@ func TestEveryListedAddressServesTheSameEventAndETagBack(t *testing.T) {
 			}
 		}
 	}
-	if len(etags) != len(events) {
-		t.Fatalf("the listing has %d events, the cache %d", len(etags), len(events))
+	// One resource per UID: the three events of "series@proton.me" and the two of "other
+	// series" are one resource each, so 15 events make 12 resources.
+	if want := 12; len(etags) != want {
+		t.Fatalf("the listing has %d resources, want %d", len(etags), want)
 	}
 
 	encode := map[string]func(string) string{
@@ -142,6 +144,7 @@ func TestEveryListedAddressServesTheSameEventAndETagBack(t *testing.T) {
 		},
 		"tilde as %7E": func(h string) string { return strings.ReplaceAll(h, "~", "%7E") },
 	}
+	components := 0
 	for how, enc := range encode {
 		for href, etag := range etags {
 			_, ms := do(h, "REPORT", "/caldav/calendars/cal/", "1", multiget(xmlEscape(enc(href))))
@@ -154,12 +157,20 @@ func TestEveryListedAddressServesTheSameEventAndETagBack(t *testing.T) {
 			for _, ps := range got.Propstat {
 				if strings.Contains(ps.Status, "200") && ps.Prop.ETag == etag && strings.Contains(ps.Prop.Data, "BEGIN:VEVENT") {
 					ok = true
+					if how == "as listed" {
+						components += strings.Count(ps.Prop.Data, "BEGIN:VEVENT")
+					}
 				}
 			}
 			if !ok {
 				t.Errorf("[%s] %s: not served back with the listed ETag %q: %+v", how, href, etag, got.Propstat)
 			}
 		}
+	}
+	// Grouping must neither lose nor duplicate an event: every cached event is a component of
+	// exactly one resource.
+	if components != len(events) {
+		t.Errorf("the resources hold %d events in all, the cache %d", components, len(events))
 	}
 }
 

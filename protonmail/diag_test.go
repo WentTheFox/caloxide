@@ -119,3 +119,40 @@ func TestQueryStringNeverReachesTheLog(t *testing.T) {
 		t.Fatalf("query leaked:\n%s", logs.String())
 	}
 }
+
+func TestDeleteCalendarEventReportsWhatProtonSays(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		body    string
+		wantErr string
+	}{
+		{"accepted", 200, `{"Code":1001,"Responses":[{"Index":0,"Response":{"Code":1000}}]}`, ""},
+		{"accepted, simple answer", 200, `{"Code":1000}`, ""},
+		{"refused for this entry", 200, `{"Code":1001,"Responses":[{"Index":0,"Response":{"Code":2061,"Error":"Event not found"}}]}`, "2061"},
+		{"refused for the request", 422, `{"Code":2011,"Error":"Not allowed"}`, "2011"},
+		{"server error", 500, `{"Code":2001,"Error":"boom"}`, "boom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sawPath, sawBody string
+			c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				sawPath = r.Method + " " + r.URL.Path
+				b := make([]byte, 512)
+				n, _ := r.Body.Read(b)
+				sawBody = string(b[:n])
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			})
+			err := c.DeleteCalendarEvent("cal", "evt1")
+			if sawPath != "PUT /calendar/v1/cal/events/sync" || !strings.Contains(sawBody, "evt1") {
+				t.Fatalf("request = %q %q", sawPath, sawBody)
+			}
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("err = %v, want it to mention %q: a refused delete must not look like a success", err, tc.wantErr)
+			}
+		})
+	}
+}

@@ -144,11 +144,11 @@ func (r CacheFileReport) String() string {
 			fmt.Fprintf(&sb, "    %s event(s) could not be sent to a client as stored and are repaired when loaded: %s\n", thousands(r.Fixed), countsSummary(r.FixedKinds))
 		}
 		if r.SplitSeries > 0 {
-			fmt.Fprintf(&sb, "    %s recurring series are served as several resources (%s events in all, %s edited occurrences): a client expects one resource per series\n",
+			fmt.Fprintf(&sb, "    %s recurring series have edited occurrences (%s events in all, %s edited occurrences), each served as one resource\n",
 				thousands(r.SplitSeries), thousands(r.SplitEvents), thousands(r.EditedOccurences))
 		}
 		if r.SharedAddresses > 0 {
-			fmt.Fprintf(&sb, "    %s address(es) are shared by %s events: a client can be given only one event per address\n", thousands(r.SharedAddresses), thousands(r.SharedEvents))
+			fmt.Fprintf(&sb, "    %s place(s) in a series are claimed by %s events: only one of each can be shown\n", thousands(r.SharedAddresses), thousands(r.SharedEvents))
 		}
 		if r.Unservable > 0 {
 			fmt.Fprintf(&sb, "    %s event(s) cannot be sent to a client at all (they do not encode as iCalendar): %s\n", thousands(r.Unservable), countsSummary(r.UnservableKind))

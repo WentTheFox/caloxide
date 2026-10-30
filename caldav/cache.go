@@ -58,7 +58,8 @@ type recentMutation struct {
 type calendarCache struct {
 	mu       sync.Mutex
 	objects  map[string]caldav.CalendarObject // keyed by Proton event ID
-	byToken  map[string]string                // CalDAV path token -> Proton event ID
+	gen      uint64                           // bumped on every change to objects (see series.go)
+	view     *calendarView                    // what clients see: one resource per UID, derived from objects
 	recent   map[string]recentMutation        // local writes/deletes, keyed by Proton event ID
 	loaded   bool
 	loading  bool
@@ -97,18 +98,6 @@ func (cc *calendarCache) waitChanLocked() <-chan struct{} {
 // loaded yet" for "emptied". cc.mu must be held.
 func (b *backend) servableLocked(cc *calendarCache) bool {
 	return cc.loaded || (b.earlySync && len(cc.objects) > 0)
-}
-
-// buildTokenIndex derives the path-token -> Proton-ID index for a set of objects.
-// Tokens are unique per object (see objectToken), so lookups by token are O(1)
-// instead of scanning every event — critical for calendar-multiget, which fetches
-// one object per href and would otherwise be O(n^2) over the whole calendar.
-func buildTokenIndex(objs map[string]caldav.CalendarObject) map[string]string {
-	idx := make(map[string]string, len(objs))
-	for id, o := range objs {
-		idx[objectToken(o.Data, id)] = id
-	}
-	return idx
 }
 
 // persistedObject is the on-disk form of a cached object: the encrypted event has
@@ -206,7 +195,6 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 	if cc == nil {
 		cc = &calendarCache{
 			objects: make(map[string]caldav.CalendarObject),
-			byToken: make(map[string]string),
 			recent:  make(map[string]recentMutation),
 		}
 		b.caches[calID] = cc
@@ -235,14 +223,12 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 	return cc
 }
 
-func snapshotObjects(cc *calendarCache) []caldav.CalendarObject {
+// snapshotObjects returns what a client is given for a calendar: one object per UID.
+func snapshotObjects(calID string, cc *calendarCache) []caldav.CalendarObject {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	out := make([]caldav.CalendarObject, 0, len(cc.objects))
-	for _, o := range cc.objects {
-		out = append(out, o)
-	}
-	return out
+	v := cc.viewLocked(calID)
+	return append([]caldav.CalendarObject(nil), v.objects...)
 }
 
 // cachedObjects returns the decrypted objects for a calendar and whether the
@@ -295,7 +281,7 @@ func (b *backend) cachedObjects(calID string) (objs []caldav.CalendarObject, rea
 	cc.mu.Lock()
 	ready = b.servableLocked(cc)
 	cc.mu.Unlock()
-	return snapshotObjects(cc), ready
+	return snapshotObjects(calID, cc), ready
 }
 
 func (b *backend) loadCache(calID string, cc *calendarCache) {
@@ -368,7 +354,7 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 				// fill in rather than waiting for the entire load to finish.
 				cc.mu.Lock()
 				cc.objects[event.ID] = *co
-				cc.byToken[objectToken(co.Data, event.ID)] = event.ID
+				cc.changedLocked()
 				cc.mu.Unlock()
 			}
 			cc.mu.Lock()
@@ -391,7 +377,7 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 	cc.mu.Lock()
 	cc.applyRecentLocked(fresh)
 	cc.objects = fresh
-	cc.byToken = buildTokenIndex(fresh)
+	cc.changedLocked()
 	cc.loaded = true
 	cc.loadedAt = time.Now()
 	cc.broadcastLocked()
@@ -400,10 +386,10 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 	saveCacheToDisk(calID, cc, b.cacheKey)
 	log.Printf("cache %s: loaded %d events", calID, len(fresh))
 	if n, ev, occ := splitSeries(fresh); n > 0 {
-		log.Printf("cache %s: %d recurring series are served as several resources (%d events in all, %d edited occurrences in the calendar); a client keys an item by UID and expects one resource per series", calID, n, ev, occ)
+		log.Printf("cache %s: %d recurring series have edited occurrences (%d events in all, %d edited occurrences), each served as one resource", calID, n, ev, occ)
 	}
 	if n, ev := addressCollisions(fresh); n > 0 {
-		log.Printf("cache %s: %d address(es) are shared by several events (%d events in all), so a client can only be given one of each", calID, n, ev)
+		log.Printf("cache %s: %d place(s) in a series are claimed by several events (%d events in all), so only one of each can be shown", calID, n, ev)
 	}
 	logUnverifiedSignatures(calID)
 	logServing(calID)
@@ -413,7 +399,7 @@ func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
 	cc := b.cacheFor(calID)
 	cc.mu.Lock()
 	cc.objects[evtID] = obj
-	cc.byToken[objectToken(obj.Data, evtID)] = evtID
+	cc.changedLocked()
 	cc.recent[evtID] = recentMutation{obj: obj, at: time.Now()}
 	persist := cc.loaded && !cc.loading
 	cc.mu.Unlock()
@@ -429,10 +415,8 @@ func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
 func (b *backend) cacheDelete(calID, evtID string) {
 	cc := b.cacheFor(calID)
 	cc.mu.Lock()
-	if o, ok := cc.objects[evtID]; ok {
-		delete(cc.byToken, objectToken(o.Data, evtID))
-	}
 	delete(cc.objects, evtID)
+	cc.changedLocked()
 	cc.recent[evtID] = recentMutation{deleted: true, at: time.Now()}
 	persist := cc.loaded && !cc.loading
 	cc.mu.Unlock()
@@ -472,15 +456,18 @@ func (b *backend) cacheCTag(calID string) string {
 	if !b.servableLocked(cc) {
 		return ""
 	}
+	// Over what clients see (one resource per UID), so a change to any event of a series
+	// changes the token.
+	objs := cc.viewLocked(calID).objects
 	var acc uint64
-	for _, o := range cc.objects {
+	for _, o := range objs {
 		h := fnv.New64a()
 		h.Write([]byte(o.Path))
 		h.Write([]byte{0})
 		h.Write([]byte(o.ETag))
 		acc += h.Sum64()
 	}
-	return fmt.Sprintf("%016x-%d", acc, len(cc.objects))
+	return fmt.Sprintf("%016x-%d", acc, len(objs))
 }
 
 func (b *backend) cacheLookup(calID, evtID string) (caldav.CalendarObject, bool) {
@@ -497,18 +484,21 @@ func (b *backend) cacheLookup(calID, evtID string) (caldav.CalendarObject, bool)
 // token-based path is mapped back to the ID needed for updates/deletes. Returns
 // ok=false when no cached event carries that token (i.e. a create).
 func (b *backend) findByToken(calID, token string) (caldav.CalendarObject, string, bool) {
+	e, ok := b.findGroup(calID, token)
+	if !ok {
+		return caldav.CalendarObject{}, "", false
+	}
+	return e.obj, e.ids[0], true
+}
+
+// findGroup resolves a path token (the UID, see objectToken) to the resource a client sees
+// and every Proton event behind it, the series first.
+func (b *backend) findGroup(calID, token string) (viewEntry, bool) {
 	cc := b.cacheFor(calID)
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	protonID, ok := cc.byToken[token]
-	if !ok {
-		return caldav.CalendarObject{}, "", false
-	}
-	o, ok := cc.objects[protonID]
-	if !ok {
-		return caldav.CalendarObject{}, "", false
-	}
-	return o, protonID, true
+	e, ok := cc.viewLocked(calID).byToken[token]
+	return e, ok
 }
 
 // saveCacheToDisk atomically writes the cache, sealed with key, to the config directory.
@@ -566,15 +556,16 @@ func saveCacheToDisk(calID string, cc *calendarCache, key *[32]byte) {
 var noKeyOnce sync.Once
 
 // loadCacheFromDisk populates cc from a previously-saved cache file, if present.
-// addressCollisions counts the addresses that more than one event would be served at, and
-// the events involved. A client keys an event by its address, so events sharing one cannot
-// all be delivered, and which of them is served can change whenever the cache is rebuilt.
+// addressCollisions counts places in a series that more than one event claims: two events with
+// the same UID and the same RECURRENCE-ID (or two series events without one). A series with
+// its edited occurrences is fine; these are duplicates, and a resource can only show one of them.
+// It returns the number of such places and the events involved.
 func addressCollisions(objs map[string]caldav.CalendarObject) (addresses, events int) {
-	byToken := make(map[string]int, len(objs))
+	byPlace := make(map[string]int, len(objs))
 	for id, o := range objs {
-		byToken[objectToken(o.Data, id)]++
+		byPlace[objectToken(o.Data, id)+"|"+eventRID(o)]++
 	}
-	for _, n := range byToken {
+	for _, n := range byPlace {
 		if n > 1 {
 			addresses++
 			events += n
@@ -720,7 +711,7 @@ func loadCacheFromDisk(calID string, cc *calendarCache, key *[32]byte) bool {
 
 	cc.mu.Lock()
 	cc.objects = objs
-	cc.byToken = buildTokenIndex(objs)
+	cc.changedLocked()
 	cc.loadedAt = pc.LoadedAt
 	// An incomplete cache is kept (it is served early if early sync is on) but is not
 	// "loaded": the calendar is fetched in full instead of being passed off as complete.
@@ -731,11 +722,11 @@ func loadCacheFromDisk(calID string, cc *calendarCache, key *[32]byte) bool {
 		log.Printf("cache %s: %d restored event(s) needed repair to be served to clients: %s", calID, rep.Fixed, countsSummary(rep.FixedKinds))
 	}
 	if rep.SplitSeries > 0 {
-		log.Printf("cache %s: %d recurring series are served as several resources (%d events in all, %d edited occurrences in the calendar); a client keys an item by UID and expects one resource per series",
+		log.Printf("cache %s: %d recurring series have edited occurrences (%d events in all, %d edited occurrences), each served as one resource",
 			calID, rep.SplitSeries, rep.SplitEvents, rep.EditedOccurences)
 	}
 	if rep.SharedAddresses > 0 {
-		log.Printf("cache %s: %d address(es) are shared by several events (%d events in all), so a client can only be given one of each",
+		log.Printf("cache %s: %d place(s) in a series are claimed by several events (%d events in all), so only one of each can be shown",
 			calID, rep.SharedAddresses, rep.SharedEvents)
 	}
 	if rep.Unservable > 0 {

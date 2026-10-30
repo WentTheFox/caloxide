@@ -200,10 +200,18 @@ inbound poll, Proton rate limiting us, (optionally) a long calendar load, a fail
   These are measurements, not repairs.
 - **One resource per series.** RFC 4791 (section 4.1) wants a recurring series and its edited
   occurrences in a single calendar object resource, and a client such as Thunderbird keys an item
-  by `UID`. Proton keeps each edited occurrence as its own event, and they are currently served as
-  separate resources that share a `UID`. A load, a restore and `cache-check` count how many series
-  are served this way, because it is the likely reason a fixed group of recurring events is
-  downloaded again on every full sync and can blink out of view meanwhile.
+  by `UID`. Proton keeps each edited occurrence as an event of its own, and serving them as
+  separate resources made Thunderbird download the same group of events again on every full sync
+  and let recurring events blink out of view meanwhile. Events are therefore grouped by `UID` for
+  clients: an ordinary event is served exactly as before (same address and ETag), and a series
+  with edited occurrences is one resource (the series first, then its occurrences in date order)
+  whose ETag changes when any of them does. Inside the cache each Proton event stays separate.
+  Deleting such a resource deletes the series and all its occurrences (occurrences first); a
+  failed delete stops and is reported. Writes are limited for now: an ordinary event can be
+  created, edited and deleted as before, but a write that would split or merge a series with
+  edited occurrences is refused (HTTP 403 with the reason) instead of being guessed at, so change
+  those in Proton Calendar. Loads, restores and `cache-check` count the series that have edited
+  occurrences.
 - **`caloxide cache-check`** is the dry run: it reads the cache files and reports, per calendar,
   how many events read back and whether the server would trust the file. It changes nothing,
   never contacts Proton, prints counts and error classes but never event text, and exits non-zero
@@ -248,6 +256,8 @@ inbound poll, Proton rate limiting us, (optionally) a long calendar load, a fail
 - **Little real-world testing.** One account, a handful of calendars. Re-login and CAPTCHA
   recovery are tested against a fake API; the full cycle on a real revoked session has not
   been run yet.
+- **Series with edited occurrences are read-only through the bridge** (see above); everything
+  else can be created, edited and deleted.
 - **No server-side scheduling (RFC 6638).** Invitations are the client's job, hence the
   *client-side scheduling* setting.
 - **Attendee data does not round-trip** through Proton's encrypted attendee cards, and
