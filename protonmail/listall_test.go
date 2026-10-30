@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -143,5 +144,85 @@ func TestListAllStopsWhenPaginationRepeats(t *testing.T) {
 	got, err := listClient(t, f).ListAllCalendarEvents("cal", nil)
 	if err != nil || len(got) != 100 {
 		t.Fatalf("got %d, %v: repeated pages must stop the listing without duplicates", len(got), err)
+	}
+}
+
+func TestListAllReportsProgressAndLogsTheTotal(t *testing.T) {
+	logs := captureLog(t)
+	f := &fakeEvents{total: 250, failPage: -1}
+	var seen []int
+	got, err := listClient(t, f).ListAllCalendarEventsProgress("cal", nil, ListProgress{
+		Total:   250,
+		Fetched: func(n int) { seen = append(seen, n) },
+	})
+	if err != nil || len(got) != 250 {
+		t.Fatalf("got %d, %v", len(got), err)
+	}
+	if len(seen) < 3 || seen[0] != 100 || seen[1] != 200 || seen[2] != 250 {
+		t.Fatalf("progress = %v, want 100, 200, 250", seen)
+	}
+	if out := logs.String(); !strings.Contains(out, "running total 200 of 250, 80%") {
+		t.Errorf("the log lacks the total and percentage:\n%s", out)
+	}
+}
+
+func TestGetEventsCount(t *testing.T) {
+	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/calendar/v1/cal/events/count" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `{"Code":1000,"Total":3100}`)
+	})
+	if n, err := c.GetEventsCount("cal"); err != nil || n != 3100 {
+		t.Fatalf("got %d, %v", n, err)
+	}
+	if _, err := c.GetEventsCount("other"); err == nil {
+		t.Error("a missing endpoint must be an error, so callers fall back to an unknown total")
+	}
+}
+
+func TestListAllHandsOverPagesInOrderAsTheyArrive(t *testing.T) {
+	f := &fakeEvents{total: 250, failPage: -1}
+	var pages [][]string
+	var running []int
+	_, err := listClient(t, f).ListAllCalendarEventsProgress("cal", nil, ListProgress{
+		Page: func(page []*CalendarEvent, n int) {
+			var ids []string
+			for _, e := range page {
+				ids = append(ids, e.ID)
+			}
+			pages = append(pages, ids)
+			running = append(running, n)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) != 3 || len(pages[0]) != 100 || len(pages[2]) != 50 {
+		t.Fatalf("pages = %d, sizes %v", len(pages), running)
+	}
+	if pages[0][0] != "e0000" || pages[1][0] != "e0100" || pages[2][0] != "e0200" {
+		t.Fatalf("pages arrived out of order: %v %v %v", pages[0][0], pages[1][0], pages[2][0])
+	}
+	if running[0] != 100 || running[1] != 200 || running[2] != 250 {
+		t.Fatalf("running totals %v", running)
+	}
+}
+
+func TestListAllNeverHandsOverRepeatedEvents(t *testing.T) {
+	f := &fakeEvents{total: 500, repeat: true, failPage: -1}
+	seen := map[string]int{}
+	listClient(t, f).ListAllCalendarEventsProgress("cal", nil, ListProgress{
+		Page: func(page []*CalendarEvent, _ int) {
+			for _, e := range page {
+				seen[e.ID]++
+			}
+		},
+	})
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s handed over %d times", id, n)
+		}
 	}
 }

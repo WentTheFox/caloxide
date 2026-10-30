@@ -41,6 +41,19 @@ type backend struct {
 
 	push     pushState
 	notifier *protonmail.Notifier
+
+	// earlySync serves a calendar while it is still loading for the first time; see
+	// CALOXIDE_EARLY_SYNC. Off by default.
+	earlySync bool
+	username  string
+	loads     *loadTracker // alerts about long cold loads
+
+	namesMu sync.Mutex
+	names   map[string]string // calendar ID -> display name, as seen in ListCalendars
+
+	standby *standbyState
+	cycles  cycles
+	core    func() // wakes the account event loop; set by WireCoreLoop
 }
 
 func (b *backend) receiveEvents(events <-chan *protonmail.Event) {
@@ -338,6 +351,7 @@ func (b *backend) ListCalendars(ctx context.Context) ([]caldav.Calendar, error) 
 			return nil, fmt.Errorf("caldav/ListCalendars: error finding member view for calendar %s: (%w)", cal.ID, err)
 		}
 
+		b.setCalendarName(cal.ID, calView.Name)
 		caldavCal := caldav.Calendar{
 			Path:        homeSetPath + cal.ID,
 			Name:        calView.Name,
@@ -372,6 +386,7 @@ func (b *backend) GetCalendar(ctx context.Context, path string) (*caldav.Calenda
 			return nil, fmt.Errorf("caldav/GetCalendar: error finding member view for calendar %s: (%w)", cal.ID, err)
 		}
 
+		b.setCalendarName(cal.ID, calView.Name)
 		caldavCal := caldav.Calendar{
 			Path:        homeSetPath + cal.ID,
 			Name:        calView.Name,
@@ -448,8 +463,9 @@ func (b *backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 	if !ready {
 		// Cold load in progress: don't serve an empty list (the client would treat
 		// the calendar as emptied). Signal a transient error so it retries.
-		log.Printf("caldav/ListCalendarObjects: calendar still loading, asking client to retry")
-		return nil, webdav.NewHTTPError(http.StatusServiceUnavailable, fmt.Errorf("caldav: calendar still loading"))
+		msg := b.loadingMessage(calId)
+		log.Printf("caldav/ListCalendarObjects: %s, asking client to retry", msg)
+		return nil, webdav.NewHTTPError(http.StatusServiceUnavailable, fmt.Errorf("caldav: %s", msg))
 	}
 	if Debug {
 		log.Printf("caldav/ListCalendarObjects: returning %d objects", len(objs))
@@ -476,8 +492,9 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 
 	all, ready := b.cachedObjects(calId)
 	if !ready {
-		log.Printf("caldav/QueryCalendarObjects: calendar still loading, asking client to retry")
-		return nil, webdav.NewHTTPError(http.StatusServiceUnavailable, fmt.Errorf("caldav: calendar still loading"))
+		msg := b.loadingMessage(calId)
+		log.Printf("caldav/QueryCalendarObjects: %s, asking client to retry", msg)
+		return nil, webdav.NewHTTPError(http.StatusServiceUnavailable, fmt.Errorf("caldav: %s", msg))
 	}
 
 	// Proton ignores server-side time filtering, so we filter the cache here.
@@ -637,10 +654,17 @@ func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username s
 		stops:       make(map[string]chan struct{}),
 	}
 
+	b.username = username
+	b.earlySync = earlySyncFromEnv()
+	b.loads = newLoadTracker(loadAlertSettingsFromEnv(), b.calendarName, c.RateLimitPause)
+	b.standby = newStandbyState(standbySettingsFromEnv())
+	b.standby.catchUp = b.catchUp
+	register(b)
+
 	if events != nil {
 		go b.receiveEvents(events)
 	}
 	b.startPush()
 
-	return &caldav.Handler{Backend: b}
+	return activityHandler{b: b, next: &caldav.Handler{Backend: b}}
 }

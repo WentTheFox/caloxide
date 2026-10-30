@@ -458,6 +458,41 @@ var listSlots = make(chan struct{}, 3)
 // Results are consumed in page order, so the outcome is the same as fetching the pages
 // one by one; at most listWindow-1 pages past the last one are requested needlessly.
 func (c *Client) ListAllCalendarEvents(calendarID string, filter *CalendarEventFilter) ([]*CalendarEvent, error) {
+	return c.ListAllCalendarEventsProgress(calendarID, filter, ListProgress{})
+}
+
+// ListProgress optionally reports how a listing is going. Total is the number of
+// events the calendar has, when known (see GetEventsCount); it only improves the log
+// line. Fetched is called after every page with the running total of events.
+//
+// Page, if set, receives the events of every page as it arrives, in page order and
+// without events already seen, so a caller can decode them while later pages are still
+// being fetched. running is the number of events handed over so far.
+type ListProgress struct {
+	Total   int
+	Fetched func(events int)
+	Page    func(page []*CalendarEvent, running int)
+}
+
+// GetEventsCount returns how many events a calendar has. Proton's own client uses the
+// same endpoint to show the progress of its search indexing and of an export.
+func (c *Client) GetEventsCount(calendarID string) (int, error) {
+	req, err := c.newRequest(http.MethodGet, calendarPath+"/"+calendarID+"/events/count", nil)
+	if err != nil {
+		return 0, err
+	}
+	var respData struct {
+		resp
+		Total int
+	}
+	if err := c.doJSON(req, &respData); err != nil {
+		return 0, fmt.Errorf("GetEventsCount: %w", err)
+	}
+	return respData.Total, nil
+}
+
+// ListAllCalendarEventsProgress is ListAllCalendarEvents with progress reporting.
+func (c *Client) ListAllCalendarEventsProgress(calendarID string, filter *CalendarEventFilter, progress ListProgress) ([]*CalendarEvent, error) {
 	const pageSize = 100
 	const maxPages = 200
 
@@ -509,14 +544,27 @@ func (c *Client) ListAllCalendarEvents(calendarID string, filter *CalendarEventF
 		}
 
 		newCount := 0
+		var fresh []*CalendarEvent
 		for _, e := range r.events {
 			if !seen[e.ID] {
 				seen[e.ID] = true
 				all = append(all, e)
+				fresh = append(fresh, e)
 				newCount++
 			}
 		}
-		log.Printf("calendar %s page %d: %d events, %d new (running total %d)", calendarID, pageNo, len(r.events), newCount, len(all))
+		if progress.Total > 0 {
+			log.Printf("calendar %s page %d: %d events, %d new (running total %d of %d, %d%%)",
+				calendarID, pageNo, len(r.events), newCount, len(all), progress.Total, len(all)*100/progress.Total)
+		} else {
+			log.Printf("calendar %s page %d: %d events, %d new (running total %d)", calendarID, pageNo, len(r.events), newCount, len(all))
+		}
+		if progress.Page != nil && len(fresh) > 0 {
+			progress.Page(fresh, len(all))
+		}
+		if progress.Fetched != nil {
+			progress.Fetched(len(all))
+		}
 
 		if len(r.events) < pageSize || newCount == 0 {
 			return all, nil

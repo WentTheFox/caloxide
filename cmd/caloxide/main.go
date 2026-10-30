@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -146,7 +147,7 @@ func startVerification(m *auth.Manager) http.Handler {
 		log.Printf("verify: control socket unavailable: %v", err)
 		return nil
 	}
-	if _, err := webverify.ServeControl(sock, publicURL, m.OpenVerificationWindow); err != nil {
+	if _, err := webverify.ServeControlWith(sock, publicURL, m.OpenVerificationWindow, caldav.StatusJSON); err != nil {
 		log.Printf("verify: control socket unavailable: %v", err)
 		return nil
 	}
@@ -327,8 +328,10 @@ func listenAndServeCalDAV(addr string, authManager *auth.Manager, eventsManager 
 			h, ok := handlers[username]
 			if !ok {
 				ch := make(chan *protonmail.Event)
-				eventsManager.Register(c, username, ch, nil)
+				r := eventsManager.Register(c, username, ch, nil)
 				h = caldav.NewHandler(c, privateKeys, username, ch)
+				// Standby slows the account event loop too while nobody uses the server.
+				caldav.WireCoreLoop(h, r.SetInterval, r.Poll)
 
 				handlers[username] = h
 			}
@@ -736,6 +739,21 @@ func main() {
 				fmt.Printf("- %v\n", u)
 			}
 		}
+
+		// What the running server is doing, if there is one to ask.
+		fmt.Println()
+		if sock, err := config.Path("control.sock"); err != nil {
+			fmt.Printf("Server: %v\n", err)
+		} else if raw, err := webverify.RequestStatus(sock); err != nil {
+			fmt.Printf("Server: not reachable (%v)\n", err)
+		} else {
+			var st caldav.Status
+			if err := json.Unmarshal(raw, &st); err != nil {
+				fmt.Printf("Server: unreadable status (%v)\n", err)
+			} else {
+				fmt.Print(st.String())
+			}
+		}
 	case "export-secret-keys":
 		exportSecretKeysCmd.Parse(flag.Args()[1:])
 		username := exportSecretKeysCmd.Arg(0)
@@ -890,6 +908,12 @@ func main() {
 
 		authManager := auth.NewManager(newClient)
 		eventsManager := events.NewManager()
+
+		// Standby only sees CalDAV requests; with other protocols running it would put
+		// a busy IMAP or CardDAV session to sleep.
+		if !*disableSMTP || !*disableIMAP || !*disableCardDAV {
+			caldav.SetStandbyAllowed(false)
+		}
 
 		done := make(chan error, 3)
 		if !*disableSMTP {

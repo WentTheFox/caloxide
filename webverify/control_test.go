@@ -126,3 +126,68 @@ func TestValidatePublicURL(t *testing.T) {
 		t.Error("ServeControl must reject a non-https public URL")
 	}
 }
+
+func TestStatusRequestReturnsWhatTheProviderSays(t *testing.T) {
+	path := sockPath(t)
+	stop, err := ServeControlWith(path, "", nil, func() ([]byte, error) { return []byte(`{"users":[{"user":"me"}]}`), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	raw, err := RequestStatus(path)
+	if err != nil || string(raw) != `{"users":[{"user":"me"}]}` {
+		t.Fatalf("got %q, %v", raw, err)
+	}
+}
+
+func TestStatusNeedsNoVerificationWindow(t *testing.T) {
+	path := sockPath(t)
+	opened := false
+	stop, _ := ServeControlWith(path, "", func() (string, time.Time, error) { opened = true; return "T", time.Now(), nil },
+		func() ([]byte, error) { return []byte(`{}`), nil })
+	defer stop()
+	if _, err := RequestStatus(path); err != nil {
+		t.Fatal(err)
+	}
+	if opened {
+		t.Fatal("asking for the status must never open a verification window")
+	}
+}
+
+func TestStatusWithoutAProviderIsAnError(t *testing.T) {
+	path := sockPath(t)
+	stop, _ := ServeControl(path, "", func() (string, time.Time, error) { return "T", time.Now(), nil })
+	defer stop()
+	if _, err := RequestStatus(path); err == nil {
+		t.Fatal("a server that cannot report a status must say so")
+	}
+}
+
+func TestStatusProviderErrorsAreReported(t *testing.T) {
+	path := sockPath(t)
+	stop, _ := ServeControlWith(path, "", nil, func() ([]byte, error) { return nil, errTest })
+	defer stop()
+	if _, err := RequestStatus(path); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestOpenStillWorksAlongsideStatus(t *testing.T) {
+	path := sockPath(t)
+	exp := time.Now().Add(time.Minute)
+	stop, _ := ServeControlWith(path, "https://x.example", func() (string, time.Time, error) { return "TOK", exp, nil },
+		func() ([]byte, error) { return []byte(`{}`), nil })
+	defer stop()
+	link, _, err := RequestLink(path)
+	if err != nil || !strings.HasSuffix(link, "TOK") {
+		t.Fatalf("link = %q, %v", link, err)
+	}
+}
+
+func TestStatusUnreachableServerHasAClearError(t *testing.T) {
+	if _, err := RequestStatus(sockPath(t)); err == nil || !strings.Contains(err.Error(), "control socket") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+var errTest = errors.New("boom")

@@ -196,3 +196,9 @@ func (c *Client) sendRateLimited(httpClient *http.Client, req *http.Request) (*h
 		}
 	}
 }
+
+// RateLimitPause is how much longer requests to the API are paused because Proton asked
+// us to slow down, or zero.
+func (c *Client) RateLimitPause() time.Duration {
+	return c.rateGate().remaining()
+}

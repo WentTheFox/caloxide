@@ -20,13 +20,33 @@ type Receiver struct {
 	locker   sync.Mutex
 	channels []chan<- *protonmail.Event
 
+	// poll wakes the loop early. Buffered by one and sent to without blocking, so a
+	// wake-up that arrives while a request is in flight is kept, not lost or waited for.
 	poll chan struct{}
+
+	// interval, if set, says how long to wait between polls. See SetInterval.
+	interval func() time.Duration
+}
+
+// SetInterval makes the loop ask f how long to wait before every poll, so a caller can
+// slow it down while nobody is using the server. A nil f restores the default.
+func (r *Receiver) SetInterval(f func() time.Duration) {
+	r.locker.Lock()
+	r.interval = f
+	r.locker.Unlock()
+}
+
+func (r *Receiver) currentInterval() time.Duration {
+	r.locker.Lock()
+	f := r.interval
+	r.locker.Unlock()
+	if f == nil {
+		return pollInterval
+	}
+	return f()
 }
 
 func (r *Receiver) receiveEvents() {
-	t := time.NewTicker(pollInterval)
-	defer t.Stop()
-
 	bo := backoff.New(pollInterval, maxErrorBackoff)
 	var last string
 	for {
@@ -56,15 +76,21 @@ func (r *Receiver) receiveEvents() {
 			break
 		}
 
+		timer := time.NewTimer(r.currentInterval())
 		select {
-		case <-t.C:
+		case <-timer.C:
 		case <-r.poll:
 		}
+		timer.Stop()
 	}
 }
 
+// Poll makes the loop poll now instead of waiting out its interval. It never blocks.
 func (r *Receiver) Poll() {
-	r.poll <- struct{}{}
+	select {
+	case r.poll <- struct{}{}:
+	default: // one wake-up is already pending
+	}
 }
 
 type Manager struct {
@@ -91,7 +117,7 @@ func (m *Manager) Register(c *protonmail.Client, username string, ch chan<- *pro
 		r = &Receiver{
 			c:        c,
 			channels: []chan<- *protonmail.Event{ch},
-			poll:     make(chan struct{}),
+			poll:     make(chan struct{}, 1),
 		}
 
 		go func() {

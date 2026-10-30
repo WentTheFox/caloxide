@@ -40,9 +40,11 @@ func (b *backend) pollCalendar(calID string, wake <-chan struct{}, stop <-chan s
 		return
 	}
 	log.Printf("poller %s: started, cursor seeded", calID)
+	b.cycles.register(calID)
+	defer b.cycles.forget(calID)
 
 	bo := backoff.New(calendarPollInterval, maxPollBackoff)
-	wait := b.push.interval()
+	wait := b.pollInterval()
 	for {
 		// Sleep until the next scheduled poll or until Proton pushes a ping for this
 		// calendar, whichever comes first.
@@ -57,6 +59,7 @@ func (b *backend) pollCalendar(calID string, wake <-chan struct{}, stop <-chan s
 		}
 		timer.Stop()
 		failed := false
+		b.cycles.begin(calID)
 
 		// Drain all currently-available pages before sleeping again.
 		for {
@@ -94,12 +97,13 @@ func (b *backend) pollCalendar(calID string, wake <-chan struct{}, stop <-chan s
 			// More pages pending: fetch immediately without waiting.
 		}
 
+		b.cycles.end(calID)
 		if failed {
 			wait = bo.Next()
 			log.Printf("poller %s: next attempt in %s", calID, wait.Round(time.Second))
 		} else {
 			bo.Reset()
-			wait = b.push.interval()
+			wait = b.pollInterval()
 		}
 	}
 }

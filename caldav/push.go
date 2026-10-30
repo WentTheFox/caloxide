@@ -21,6 +21,8 @@ import (
 // reason for inbound changes to arrive later than they did with polling alone.
 type pushState struct {
 	up atomic.Bool
+	// detail is why the channel is down, or what it is doing, for status.
+	detail string
 
 	mu    sync.Mutex
 	wakes map[string]chan struct{}
@@ -105,6 +107,9 @@ func (b *backend) startPush() {
 	n := b.c.NewNotifier()
 	n.OnPing = b.push.handlePing
 	n.OnState = func(up bool, detail string) {
+		b.push.mu.Lock()
+		b.push.detail = detail
+		b.push.mu.Unlock()
 		was := b.push.up.Swap(up)
 		if up != was || !up {
 			log.Printf("push: %s", pushStatus(up, detail))

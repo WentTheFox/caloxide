@@ -21,10 +21,14 @@ import (
 const ioTimeout = 5 * time.Second
 
 type linkReply struct {
-	URL     string    `json:"url,omitempty"`
-	Expires time.Time `json:"expires,omitempty"`
-	Error   string    `json:"error,omitempty"`
+	URL     string          `json:"url,omitempty"`
+	Expires time.Time       `json:"expires,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	Status  json.RawMessage `json:"status,omitempty"`
 }
+
+// StatusProvider returns the server's status as JSON, for the "status" request.
+type StatusProvider func() ([]byte, error)
 
 // Opener opens a window and returns its one-time token and expiry.
 type Opener func() (token string, expires time.Time, err error)
@@ -65,6 +69,12 @@ func Link(publicURL, token string) string {
 // with a one-time link. The returned function stops the listener and removes the
 // socket.
 func ServeControl(path, publicURL string, open Opener) (stop func(), err error) {
+	return ServeControlWith(path, publicURL, open, nil)
+}
+
+// ServeControlWith is ServeControl that also answers "status" requests with what status
+// returns. A nil status makes "status" an error.
+func ServeControlWith(path, publicURL string, open Opener, status StatusProvider) (stop func(), err error) {
 	if err := ValidatePublicURL(publicURL); err != nil {
 		return nil, fmt.Errorf("public URL: %v", err)
 	}
@@ -91,17 +101,31 @@ func ServeControl(path, publicURL string, open Opener) (stop func(), err error) 
 			if err != nil {
 				return // closed by stop
 			}
-			go serveOne(conn, publicURL, open)
+			go serveOne(conn, publicURL, open, status)
 		}
 	}()
 	return func() { ln.Close(); os.Remove(path) }, nil
 }
 
-func serveOne(conn net.Conn, publicURL string, open Opener) {
+func serveOne(conn net.Conn, publicURL string, open Opener, status StatusProvider) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(ioTimeout))
 	line, err := bufio.NewReader(io.LimitReader(conn, 64)).ReadString('\n')
-	if err != nil || strings.TrimSpace(line) != "open" {
+	cmd := strings.TrimSpace(line)
+	if err == nil && cmd == "status" {
+		if status == nil {
+			json.NewEncoder(conn).Encode(linkReply{Error: "status is not available"})
+			return
+		}
+		raw, serr := status()
+		if serr != nil {
+			json.NewEncoder(conn).Encode(linkReply{Error: serr.Error()})
+			return
+		}
+		json.NewEncoder(conn).Encode(linkReply{Status: raw})
+		return
+	}
+	if err != nil || cmd != "open" || open == nil {
 		json.NewEncoder(conn).Encode(linkReply{Error: "unknown request"})
 		return
 	}
@@ -117,7 +141,7 @@ func serveOne(conn net.Conn, publicURL string, open Opener) {
 func RequestLink(path string) (link string, expires time.Time, err error) {
 	conn, err := net.DialTimeout("unix", path, ioTimeout)
 	if err != nil {
-		return "", time.Time{}, errors.New("cannot reach the bridge's control socket; is the bridge running with the secrets backend enabled?")
+		return "", time.Time{}, errors.New("cannot reach the bridge's control socket; is the bridge running (with stored credentials, so it can renew its session)?")
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(ioTimeout))
@@ -132,4 +156,25 @@ func RequestLink(path string) (link string, expires time.Time, err error) {
 		return "", time.Time{}, errors.New(r.Error)
 	}
 	return r.URL, r.Expires, nil
+}
+
+// RequestStatus asks the running bridge for its status and returns the JSON it sent.
+func RequestStatus(path string) ([]byte, error) {
+	conn, err := net.DialTimeout("unix", path, ioTimeout)
+	if err != nil {
+		return nil, errors.New("cannot reach the bridge's control socket; is the bridge running?")
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(ioTimeout))
+	if _, err := io.WriteString(conn, "status\n"); err != nil {
+		return nil, err
+	}
+	var r linkReply
+	if err := json.NewDecoder(io.LimitReader(conn, 1<<20)).Decode(&r); err != nil {
+		return nil, errors.New("unreadable reply from the bridge")
+	}
+	if r.Error != "" {
+		return nil, errors.New(r.Error)
+	}
+	return r.Status, nil
 }

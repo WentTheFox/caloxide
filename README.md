@@ -131,6 +131,10 @@ honoured when their `CALOXIDE_*` / `caloxide` counterparts are absent.
 | `CALOXIDE_TOTP_SECRET`, `CALOXIDE_TOTP_SECRET_FILE` | 2FA seed for `auth` (or enter it at the prompt). |
 | `CALOXIDE_DISCORD_WEBHOOK_URL`, `…_FILE` | Discord alerts (mentions disabled; the URL is never logged). |
 | `CALOXIDE_APPRISE_URL`, `CALOXIDE_APPRISE_URLS` | Apprise alerts: a `/notify/<key>` endpoint, or the stateless `/notify` endpoint plus target URLs. |
+| `CALOXIDE_EARLY_SYNC` | `on` serves a calendar while it is still loading for the first time, as events are decoded. **Off by default**; for the initial import only, see [Sync behaviour](#sync-behaviour). |
+| `CALOXIDE_LOAD_ALERTS` | Alerts about a calendar's first load: `off`, `done` (default, one message when everything has loaded) or `progress` (also a status message every `…_EVERY`). |
+| `CALOXIDE_LOAD_ALERT_AFTER`, `CALOXIDE_LOAD_ALERT_EVERY` | Loads that finish sooner than `…_AFTER` (default 1m) send nothing. In `progress` mode a status message goes out every `…_EVERY` (default 30m, at least 5m). |
+| `CALOXIDE_STANDBY`, `CALOXIDE_STANDBY_AFTER`, `CALOXIDE_STANDBY_INTERVAL` | Standby (default **on**): after `…_AFTER` (default 5m) without a client request, polling slows to `…_INTERVAL` (default 15m). See [Sync behaviour](#sync-behaviour). |
 | `CALOXIDE_PROTONDRIVE_APP_VERSION` | App version to present (same name as rclone's option). Leave unset: see [`FORK.md`](FORK.md). |
 | `HYDROXIDE_BRIDGE_PASS` | Bridge password, to skip the prompt (inherited name). |
 
@@ -140,7 +144,7 @@ Run `caloxide -h` for all of them and the commands (`auth`, `caldav`, `verify`, 
 `push-probe`, and the inherited mail ones).
 
 Alerts are sent for: a rejected CalDAV login (usually an expired session), a stalled
-inbound poll, Proton rate limiting us, a failed calendar write, a handler panic, a re-login that needs you, and
+inbound poll, Proton rate limiting us, (optionally) a long calendar load, a failed calendar write, a handler panic, a re-login that needs you, and
 (when run as a service) a crash.
 
 ## Sync behaviour
@@ -158,8 +162,32 @@ inbound poll, Proton rate limiting us, a failed calendar write, a handler panic,
 - **Cold start** (first run, or after deleting the cache) fetches the whole calendar and
   decrypts it. The wait is almost all network latency (100 events per page, seconds per
   page; decrypting 700 events takes about a second), so up to two pages per calendar and
-  three overall are fetched at once. Until a calendar is loaded the server answers
-  `503`, and clients retry.
+  three overall are fetched at once. Each page is decoded as it arrives. Until a calendar
+  is loaded the server answers `503`, and clients retry.
+- **Progress is always logged and visible.** The page lines say `running total 1200 of 3100,
+  38%` (the total comes from Proton's `events/count`), the 503 text says how far the load has
+  got, and `caloxide status` prints one line per calendar (state, events, elapsed), the
+  rate-limit pause, the push channel and standby. In a container:
+  `docker exec caloxide /caloxide -config-home /data status`. It talks to the running server
+  over the control socket only, never over the network.
+- **Load alerts** (`CALOXIDE_LOAD_ALERTS`) are for first loads that may take seconds or hours.
+  Quick loads send nothing. With `progress`, a message every interval lists each calendar's
+  progress (or says the total is unknown), flags a calendar that made no progress since the
+  last message, and mentions any rate-limit pause.
+- **Early sync** (`CALOXIDE_EARLY_SYNC=on`, off by default) serves a calendar as soon as
+  its first page is decoded instead of when everything is loaded. Every decoded page changes
+  the CTag, so a client refreshing every minute sees the calendar fill in; CalDAV has no way
+  to push it. It is meant for the **initial import** and should be unset afterwards. The risk
+  it carries: if the server has no cache for a calendar while a client still holds a full
+  local copy (for example after deleting the cache), the client drops what it cannot see yet
+  from its own copy until it arrives. Nothing is deleted from Proton, and an empty calendar is
+  never served.
+- **Standby** (default on). Thunderbird asks about once a minute while it is open. After five
+  minutes without an authenticated request the calendar pollers and the account event loop
+  drop to a 15 minute pace. The first request after that waits (at most 15 s) while every
+  calendar is polled once, so what it reads is as fresh as normally, and polling returns to
+  30 s. It watches CalDAV requests only, so it switches itself off when `caloxide serve` also
+  runs IMAP, SMTP or CardDAV.
 - **Rate limits are shared.** Proton does not publish its limits, so every request to the
   API goes through one budget for the whole process, whichever calendar it is for: at most
   four request starts a second, and when Proton answers `429` (or `503` with `Retry-After`)

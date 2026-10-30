@@ -62,6 +62,40 @@ type calendarCache struct {
 	loaded   bool
 	loading  bool
 	loadedAt time.Time
+
+	// Progress of the current or last load, for status and alerts.
+	loadStarted time.Time
+	fetched     int    // events handed over so far
+	total       int    // events Proton says the calendar has; 0 when unknown
+	loadErr     string // why the last load failed, if it did
+
+	// changed is closed and replaced whenever the cache or its load state changes, so
+	// waiters block on it instead of sleeping in a loop.
+	changed chan struct{}
+}
+
+// broadcastLocked wakes everything waiting on the cache. cc.mu must be held.
+func (cc *calendarCache) broadcastLocked() {
+	if cc.changed != nil {
+		close(cc.changed)
+	}
+	cc.changed = make(chan struct{})
+}
+
+// waitChanLocked returns the channel closed by the next change. cc.mu must be held.
+func (cc *calendarCache) waitChanLocked() <-chan struct{} {
+	if cc.changed == nil {
+		cc.changed = make(chan struct{})
+	}
+	return cc.changed
+}
+
+// servableLocked reports whether the cache may answer listing requests: once fully
+// loaded, or, only when early sync is on, as soon as it holds events from a load that
+// is still running. An empty cache is never served, so a client cannot mistake "not
+// loaded yet" for "emptied". cc.mu must be held.
+func (b *backend) servableLocked(cc *calendarCache) bool {
+	return cc.loaded || (b.earlySync && len(cc.objects) > 0)
 }
 
 // buildTokenIndex derives the path-token -> Proton-ID index for a set of objects.
@@ -152,6 +186,27 @@ func snapshotObjects(cc *calendarCache) []caldav.CalendarObject {
 // rather than serve an empty snapshot — a cold load fetches every page before
 // decrypting, so the cache is legitimately empty for the whole fetch, and a
 // client that saw 0 objects would treat the calendar as emptied and churn.
+// waitForData blocks until the cache can be served or the wait is over. It is woken by
+// the loader, not by a timer, so a calendar that loads quickly answers at once.
+func (b *backend) waitForData(cc *calendarCache, wait time.Duration) {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		cc.mu.Lock()
+		done := b.servableLocked(cc)
+		ch := cc.waitChanLocked()
+		cc.mu.Unlock()
+		if done {
+			return
+		}
+		select {
+		case <-ch:
+		case <-timer.C:
+			return
+		}
+	}
+}
+
 func (b *backend) cachedObjects(calID string) (objs []caldav.CalendarObject, ready bool) {
 	cc := b.cacheFor(calID)
 
@@ -167,63 +222,99 @@ func (b *backend) cachedObjects(calID string) (objs []caldav.CalendarObject, rea
 	cc.mu.Unlock()
 
 	if triggered && wasCold {
-		deadline := time.Now().Add(initialLoadWait)
-		for time.Now().Before(deadline) {
-			time.Sleep(250 * time.Millisecond)
-			cc.mu.Lock()
-			done := cc.loaded
-			cc.mu.Unlock()
-			if done {
-				break
-			}
-		}
+		b.waitForData(cc, initialLoadWait)
 	}
 
 	cc.mu.Lock()
-	ready = cc.loaded
+	ready = b.servableLocked(cc)
 	cc.mu.Unlock()
 	return snapshotObjects(cc), ready
 }
 
 func (b *backend) loadCache(calID string, cc *calendarCache) {
+	cc.mu.Lock()
+	cold := !cc.loaded
+	cc.loadStarted = time.Now()
+	cc.fetched, cc.total, cc.loadErr = 0, 0, ""
+	cc.broadcastLocked()
+	cc.mu.Unlock()
+	if cold {
+		b.loads.start(calID)
+	}
+
+	var failure error
 	defer func() {
 		cc.mu.Lock()
 		cc.loading = false
+		if failure != nil {
+			cc.loadErr = failure.Error()
+		}
+		events := len(cc.objects)
+		cc.broadcastLocked()
 		cc.mu.Unlock()
+		if cold {
+			b.loads.finish(calID, events, failure)
+		}
 	}()
 
 	bootstrap, err := b.c.BootstrapCalendar(calID)
 	if err != nil {
-		log.Printf("cache %s: bootstrap failed: %v", calID, err)
+		failure = fmt.Errorf("bootstrap failed: %w", err)
+		log.Printf("cache %s: %v", calID, failure)
 		return
 	}
 	calKr, err := bootstrap.DecryptKeyring(b.privateKeys)
 	if err != nil {
-		log.Printf("cache %s: keyring decrypt failed: %v", calID, err)
+		failure = fmt.Errorf("keyring decrypt failed: %w", err)
+		log.Printf("cache %s: %v", calID, failure)
 		return
 	}
 
-	events, err := b.c.ListAllCalendarEvents(calID, nil)
+	// The total only makes the progress readable; without it the load goes on and the
+	// progress shows what has been fetched so far.
+	total, err := b.c.GetEventsCount(calID)
 	if err != nil {
-		log.Printf("cache %s: list events failed: %v", calID, err)
-		return
+		log.Printf("cache %s: event count unavailable, progress will show no total: %v", calID, err)
+		total = 0
 	}
+	cc.mu.Lock()
+	cc.total = total
+	cc.mu.Unlock()
+	b.loads.update(calID, 0, total)
 
-	fresh := make(map[string]caldav.CalendarObject, len(events))
-	for _, event := range events {
-		co, err := getCalendarObject(b, calID, calKr, event, bootstrap.CalendarSettings)
-		if err != nil {
-			log.Printf("cache %s: skipping event %s: %v", calID, event.ID, err)
-			continue
-		}
-		fresh[event.ID] = *co
+	// Decode each page as it arrives instead of after the last one: the time goes into
+	// fetching, so decoding in step costs nothing and lets a calendar that is being
+	// served early (see earlySync) fill in while the load is still running.
+	fresh := make(map[string]caldav.CalendarObject)
+	_, err = b.c.ListAllCalendarEventsProgress(calID, nil, protonmail.ListProgress{
+		Total: total,
+		Page: func(page []*protonmail.CalendarEvent, running int) {
+			for _, event := range page {
+				co, err := getCalendarObject(b, calID, calKr, event, bootstrap.CalendarSettings)
+				if err != nil {
+					log.Printf("cache %s: skipping event %s: %v", calID, event.ID, err)
+					continue
+				}
+				fresh[event.ID] = *co
 
-		// Publish incrementally so a client polling mid-load sees the calendar
-		// fill in rather than waiting for the entire decrypt to finish.
-		cc.mu.Lock()
-		cc.objects[event.ID] = *co
-		cc.byToken[objectToken(co.Data, event.ID)] = event.ID
-		cc.mu.Unlock()
+				// Publish incrementally so a client polling mid-load sees the calendar
+				// fill in rather than waiting for the entire load to finish.
+				cc.mu.Lock()
+				cc.objects[event.ID] = *co
+				cc.byToken[objectToken(co.Data, event.ID)] = event.ID
+				cc.mu.Unlock()
+			}
+			cc.mu.Lock()
+			cc.fetched = running
+			cc.broadcastLocked()
+			cc.mu.Unlock()
+			b.loads.update(calID, running, total)
+		},
+	})
+	if err != nil {
+		failure = fmt.Errorf("list events failed: %w", err)
+		log.Printf("cache %s: %v", calID, failure)
+		return
 	}
 
 	// Replace wholesale so events deleted upstream drop out of the cache, but
@@ -236,6 +327,7 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 	cc.byToken = buildTokenIndex(fresh)
 	cc.loaded = true
 	cc.loadedAt = time.Now()
+	cc.broadcastLocked()
 	cc.mu.Unlock()
 
 	saveCacheToDisk(calID, cc)
@@ -302,7 +394,7 @@ func (b *backend) cacheCTag(calID string) string {
 	cc := b.cacheFor(calID)
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	if !cc.loaded {
+	if !b.servableLocked(cc) {
 		return ""
 	}
 	var acc uint64
