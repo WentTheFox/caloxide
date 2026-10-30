@@ -13,6 +13,7 @@ os\.(Getenv|LookupEnv|Environ|Setenv)	cmd/caloxide/main.go
 os\.(Getenv|LookupEnv|Environ|Setenv)	config/legacy.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	auth/auth.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	caldav/cache.go
+os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	caldav/cachecheck.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	cmd/caloxide/main.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	config/tls.go
 os\.(ReadFile|Open|ReadDir)\b|ioutil\.(ReadFile|ReadDir)\b	notify/notify.go

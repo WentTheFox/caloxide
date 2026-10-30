@@ -7,6 +7,8 @@ import (
 	"hash/fnv"
 	"log"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -112,16 +114,84 @@ func buildTokenIndex(objs map[string]caldav.CalendarObject) map[string]string {
 
 // persistedObject is the on-disk form of a cached object: the encrypted event has
 // already been decrypted to plain iCalendar text here.
+//
+// New files store the event's structure (Tree) rather than iCalendar text: writing text
+// meant encoding it with a validating encoder and parsing it back with a strict decoder,
+// and some events did not survive that, which silently dropped them from the restored
+// cache. The structure is plain data and always comes back as it went in. Files from
+// before that have ICS (text) instead, and are still read.
 type persistedObject struct {
 	Path    string
 	ETag    string
 	ModTime time.Time
-	ICS     string
+	ICS     string          `json:",omitempty"`
+	Tree    *ical.Component `json:",omitempty"`
 }
 
 type persistedCache struct {
 	LoadedAt time.Time
 	Objects  map[string]persistedObject
+	// Count is how many events the cache held when it was saved. Objects can be shorter
+	// if some could not be encoded, and a restore that finds fewer than Count must not
+	// pass the cache off as complete. Files from before this field existed have 0.
+	Count int `json:",omitempty"`
+}
+
+// errorClass shortens an error for the log: digits become '#', so the same failure on
+// different lines groups together, and it is cut short, since the text may quote a bit of
+// the event it failed on.
+func errorClass(err error) string {
+	s := regexp.MustCompile(`[0-9]+`).ReplaceAllString(err.Error(), "#")
+	if len(s) > 90 {
+		s = s[:90] + "…"
+	}
+	return s
+}
+
+// failureSummary renders "3x <class>, 1x <class>" for the most common failures.
+func failureSummary(classes map[string]int) string {
+	type kv struct {
+		k string
+		n int
+	}
+	var all []kv
+	for k, n := range classes {
+		all = append(all, kv{k, n})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].n != all[j].n {
+			return all[i].n > all[j].n
+		}
+		return all[i].k < all[j].k
+	})
+	var parts []string
+	for i, e := range all {
+		if i == 3 {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%dx %s", e.n, e.k))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// decodeICS reads a stored event. The strict decoder comes first; the repair that is
+// applied to events read from Proton (sanitizeICS) is the fallback, so what was accepted
+// when it arrived is also accepted when read back.
+func decodeICS(text string) (*ical.Calendar, error) {
+	cal, _, err := decodeICSReporting(text)
+	return cal, err
+}
+
+// decodeICSReporting is decodeICS that also says whether the repair was needed.
+func decodeICSReporting(text string) (cal *ical.Calendar, repaired bool, err error) {
+	cal, err = ical.NewDecoder(strings.NewReader(text)).Decode()
+	if err == nil {
+		return cal, false, nil
+	}
+	if fixed, err2 := ical.NewDecoder(bytes.NewReader(sanitizeICS([]byte(text)))).Decode(); err2 == nil {
+		return fixed, true, nil
+	}
+	return nil, false, err
 }
 
 func cacheFilePath(calID string) (string, error) {
@@ -141,9 +211,7 @@ func (b *backend) cacheFor(calID string) *calendarCache {
 			recent:  make(map[string]recentMutation),
 		}
 		b.caches[calID] = cc
-		if loadCacheFromDisk(calID, cc) {
-			log.Printf("cache %s: restored %d events from disk", calID, len(cc.objects))
-		}
+		loadCacheFromDisk(calID, cc) // logs what it restored, or why the calendar will be fetched again
 	}
 	// Start the calendar event-loop poller once per calendar, so inbound changes
 	// (events created/edited in Proton or on another device) are patched into the
@@ -332,6 +400,7 @@ func (b *backend) loadCache(calID string, cc *calendarCache) {
 
 	saveCacheToDisk(calID, cc)
 	log.Printf("cache %s: loaded %d events", calID, len(fresh))
+	logUnverifiedSignatures(calID)
 }
 
 func (b *backend) cacheStore(calID, evtID string, obj caldav.CalendarObject) {
@@ -448,15 +517,14 @@ func saveCacheToDisk(calID string, cc *calendarCache) {
 	pc := persistedCache{
 		LoadedAt: cc.loadedAt,
 		Objects:  make(map[string]persistedObject, len(cc.objects)),
+		Count:    len(cc.objects),
 	}
 	for id, o := range cc.objects {
-		var buf bytes.Buffer
+		po := persistedObject{Path: o.Path, ETag: o.ETag, ModTime: o.ModTime}
 		if o.Data != nil {
-			if err := ical.NewEncoder(&buf).Encode(o.Data); err != nil {
-				continue
-			}
+			po.Tree = o.Data.Component
 		}
-		pc.Objects[id] = persistedObject{Path: o.Path, ETag: o.ETag, ModTime: o.ModTime, ICS: buf.String()}
+		pc.Objects[id] = po
 	}
 	cc.mu.Unlock()
 
@@ -464,6 +532,13 @@ func saveCacheToDisk(calID string, cc *calendarCache) {
 	if err != nil {
 		log.Printf("cache %s: marshal failed: %v", calID, err)
 		return
+	}
+	// The first time a file written by an older version is replaced, keep that file once.
+	// The cache is rebuilt from Proton if it is lost, so this is only a safety net.
+	if _, err := os.Stat(path + ".bak"); os.IsNotExist(err) {
+		if old, err := os.ReadFile(path); err == nil && !bytes.Contains(old, []byte(`"Tree"`)) {
+			os.WriteFile(path+".bak", old, 0600)
+		}
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
@@ -476,6 +551,50 @@ func saveCacheToDisk(calID string, cc *calendarCache) {
 }
 
 // loadCacheFromDisk populates cc from a previously-saved cache file, if present.
+// restoreReport says what reading a cache file back gives.
+type restoreReport struct {
+	Entries  int            // events in the file
+	Want     int            // events the file says it held (Count, or Entries for old files)
+	Restored int            // events that were read back
+	FromTree int            // ... of which from the structure format
+	FromText int            // ... of which from iCalendar text
+	Repaired int            // ... of which needed the repair for text from Proton
+	Failed   map[string]int // error class -> events that could not be read back
+}
+
+func (r restoreReport) Complete() bool { return r.Restored == r.Want }
+
+// restoreObjects reads the events of a cache file back.
+func restoreObjects(pc persistedCache) (map[string]caldav.CalendarObject, restoreReport) {
+	rep := restoreReport{Entries: len(pc.Objects), Want: pc.Count, Failed: map[string]int{}}
+	if rep.Want < rep.Entries {
+		rep.Want = rep.Entries
+	}
+	objs := make(map[string]caldav.CalendarObject, len(pc.Objects))
+	for id, po := range pc.Objects {
+		var data *ical.Calendar
+		switch {
+		case po.Tree != nil:
+			data = &ical.Calendar{Component: po.Tree}
+			rep.FromTree++
+		default:
+			cal, repaired, err := decodeICSReporting(po.ICS)
+			if err != nil {
+				rep.Failed[errorClass(err)]++
+				continue
+			}
+			data = cal
+			rep.FromText++
+			if repaired {
+				rep.Repaired++
+			}
+		}
+		objs[id] = caldav.CalendarObject{Path: po.Path, ETag: po.ETag, ModTime: po.ModTime, Data: data}
+	}
+	rep.Restored = len(objs)
+	return objs, rep
+}
+
 func loadCacheFromDisk(calID string, cc *calendarCache) bool {
 	path, err := cacheFilePath(calID)
 	if err != nil {
@@ -491,22 +610,25 @@ func loadCacheFromDisk(calID string, cc *calendarCache) bool {
 		return false
 	}
 
-	objs := make(map[string]caldav.CalendarObject, len(pc.Objects))
-	for id, po := range pc.Objects {
-		cal, err := ical.NewDecoder(strings.NewReader(po.ICS)).Decode()
-		if err != nil {
-			continue
-		}
-		objs[id] = caldav.CalendarObject{Path: po.Path, ETag: po.ETag, ModTime: po.ModTime, Data: cal}
-	}
+	objs, rep := restoreObjects(pc)
+	complete := rep.Complete()
 
 	cc.mu.Lock()
 	cc.objects = objs
 	cc.byToken = buildTokenIndex(objs)
-	cc.loaded = true
 	cc.loadedAt = pc.LoadedAt
+	// An incomplete cache is kept (it is served early if early sync is on) but is not
+	// "loaded": the calendar is fetched in full instead of being passed off as complete.
+	cc.loaded = complete
 	cc.mu.Unlock()
-	return true
+
+	if complete {
+		log.Printf("cache %s: restored %d events from disk", calID, rep.Restored)
+	} else {
+		log.Printf("cache %s: only %d of %d events could be restored from disk, so the calendar will be loaded again in full (%d unreadable: %s)",
+			calID, rep.Restored, rep.Want, rep.Want-rep.Restored, failureSummary(rep.Failed))
+	}
+	return complete
 }
 
 // objectInRange reports whether a cached object has a VEVENT overlapping

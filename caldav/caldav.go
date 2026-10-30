@@ -147,7 +147,7 @@ func readEventCard(event *ical.Event, eventCard protonmail.CalendarEventCard, us
 		// Old or imported events are often signed with a key that no longer
 		// verifies. For a personal read bridge, decryptability matters more than
 		// signature verification — serve the event rather than dropping it.
-		log.Printf("caldav/readEventCard: serving event with unverified signature: %v", err)
+		noteUnverifiedSignature(err)
 	}
 
 	children := decoded.Events()
@@ -667,4 +667,35 @@ func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username s
 	b.startPush()
 
 	return activityHandler{b: b, next: &caldav.Handler{Backend: b}}
+}
+
+// Events whose signature does not verify are served anyway (see readEventCard). They are
+// counted and summarised once per load: a line per event, at every reload, buried the
+// log lines that matter.
+var unverifiedSignatures struct {
+	mu    sync.Mutex
+	n     int
+	first string
+}
+
+func noteUnverifiedSignature(err error) {
+	u := &unverifiedSignatures
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.n == 0 {
+		u.first = errorClass(err)
+	}
+	u.n++
+}
+
+// logUnverifiedSignatures writes the summary, if there is anything to say.
+func logUnverifiedSignatures(calID string) {
+	u := &unverifiedSignatures
+	u.mu.Lock()
+	n, first := u.n, u.first
+	u.n, u.first = 0, ""
+	u.mu.Unlock()
+	if n > 0 {
+		log.Printf("cache %s: %d event(s) read since the last summary have a signature that does not verify; they are served anyway, not dropped (%s)", calID, n, first)
+	}
 }

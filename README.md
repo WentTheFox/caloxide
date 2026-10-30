@@ -170,6 +170,18 @@ inbound poll, Proton rate limiting us, (optionally) a long calendar load, a fail
   rate-limit pause, the push channel and standby. In a container:
   `docker exec caloxide /caloxide -config-home /data status`. It talks to the running server
   over the control socket only, never over the network.
+- **The on-disk cache never passes itself off as complete.** Events are stored as their
+  structure (not as iCalendar text), so every event comes back as it went in, and a file also
+  records how many events it was meant to hold. If a restore finds fewer, the calendar counts as
+  not loaded and is fetched from Proton again in full, with a log line saying how many events
+  were unreadable and why. Caches from earlier versions are still read and are rewritten in the
+  new format (the old file is kept once as `calcache-*.json.bak`; it is safe to delete). This only
+  ever reads from Proton, nothing is written to it.
+- **`caloxide cache-check`** is the dry run: it reads the cache files and reports, per calendar,
+  how many events read back and whether the server would trust the file. It changes nothing,
+  never contacts Proton, prints counts and error classes but never event text, and exits non-zero
+  if any calendar would be loaded again. In a container:
+  `docker exec caloxide /caloxide -config-home /data cache-check`.
 - **Load alerts** (`CALOXIDE_LOAD_ALERTS`) are for first loads that may take seconds or hours.
   Quick loads send nothing. With `progress`, a message every interval lists each calendar's
   progress (or says the total is unknown), flags a calendar that made no progress since the

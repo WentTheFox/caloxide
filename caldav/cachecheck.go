@@ -1,0 +1,95 @@
+package caldav
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// CacheFileReport describes one on-disk calendar cache, as the server would read it.
+type CacheFileReport struct {
+	File     string         `json:"file"`
+	Calendar string         `json:"calendar"`
+	Bytes    int64          `json:"bytes"`
+	Entries  int            `json:"entries"`
+	Want     int            `json:"want"`
+	Restored int            `json:"restored"`
+	FromTree int            `json:"from_tree"`
+	FromText int            `json:"from_text"`
+	Repaired int            `json:"repaired"`
+	Failed   map[string]int `json:"failed,omitempty"`
+	Unusable string         `json:"unusable,omitempty"` // the file could not be read at all
+}
+
+// CheckCacheDir reads every calendar cache in dir and reports what reading it back gives.
+// It is a dry run in the strict sense: it only reads, never writes, never contacts
+// Proton, and its output contains counts and error classes, never event text.
+func CheckCacheDir(dir string) ([]CacheFileReport, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "calcache-*.json"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	var out []CacheFileReport
+	for _, p := range paths {
+		rep := CacheFileReport{File: filepath.Base(p), Failed: map[string]int{}}
+		rep.Calendar = strings.TrimSuffix(strings.TrimPrefix(rep.File, "calcache-"), ".json")
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			rep.Unusable = err.Error()
+			out = append(out, rep)
+			continue
+		}
+		rep.Bytes = int64(len(raw))
+		var pc persistedCache
+		if err := json.Unmarshal(raw, &pc); err != nil {
+			rep.Unusable = "not a readable cache file: " + errorClass(err)
+			out = append(out, rep)
+			continue
+		}
+		_, r := restoreObjects(pc)
+		rep.Entries, rep.Want, rep.Restored = r.Entries, r.Want, r.Restored
+		rep.FromTree, rep.FromText, rep.Repaired, rep.Failed = r.FromTree, r.FromText, r.Repaired, r.Failed
+		out = append(out, rep)
+	}
+	return out, nil
+}
+
+// Complete reports whether the server would trust this cache without fetching it again.
+func (r CacheFileReport) Complete() bool { return r.Unusable == "" && r.Restored == r.Want }
+
+// String renders the report for a terminal.
+func (r CacheFileReport) String() string {
+	short := r.Calendar
+	if len(short) > 12 {
+		short = short[:12] + "…"
+	}
+	var sb strings.Builder
+	switch {
+	case r.Unusable != "":
+		fmt.Fprintf(&sb, "%s  UNUSABLE: %s\n    The server ignores this file and loads the calendar from Proton.\n", short, r.Unusable)
+	case r.Complete():
+		fmt.Fprintf(&sb, "%s  complete: %s of %s events read back (%s as structure, %s as text", short,
+			thousands(r.Restored), thousands(r.Want), thousands(r.FromTree), thousands(r.FromText))
+		if r.Repaired > 0 {
+			fmt.Fprintf(&sb, ", %s needed repair", thousands(r.Repaired))
+		}
+		sb.WriteString(")\n")
+		if r.FromText > 0 {
+			sb.WriteString("    Text entries are rewritten as structure the next time the calendar is loaded in full.\n")
+		}
+	default:
+		fmt.Fprintf(&sb, "%s  INCOMPLETE: %s of %s events read back (%s missing)\n", short,
+			thousands(r.Restored), thousands(r.Want), thousands(r.Want-r.Restored))
+		sb.WriteString("    The server will not trust this file: it loads the calendar from Proton in full and\n    saves it again in the new format. Nothing is written to Proton.\n")
+		if len(r.Failed) > 0 {
+			fmt.Fprintf(&sb, "    Why: %s\n", failureSummary(r.Failed))
+		} else {
+			sb.WriteString("    Why: the file holds fewer events than it says it had been given to save.\n")
+		}
+	}
+	return sb.String()
+}

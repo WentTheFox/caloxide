@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -416,6 +417,7 @@ Commands:
 	serve			Run all servers
 	smtp			Run caloxide as an SMTP server
 	status			View caloxide status
+	cache-check [dir]	Dry run: check the calendar caches on disk (changes nothing, never contacts Proton)
 	verify			Ask the running server for a one-time link to answer Proton's CAPTCHA
 	push-probe <username>	Connect to Proton's push channel and print what it sends (read-only)
 
@@ -725,6 +727,36 @@ func main() {
 			log.Fatal("usage: caloxide push-probe <username>")
 		}
 		pushProbe(username, newClient)
+	case "cache-check":
+		// Dry run: reads the calendar caches in the state directory and says whether the
+		// server would trust them. Changes nothing and never contacts Proton.
+		probe, err := config.Path("calcache-probe")
+		if err != nil {
+			log.Fatal(err)
+		}
+		dir := filepath.Dir(probe)
+		if d := flag.Arg(1); d != "" {
+			dir = d
+		}
+		reports, err := caldav.CheckCacheDir(dir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(reports) == 0 {
+			fmt.Printf("No calendar caches in %s.\n", dir)
+			break
+		}
+		bad := 0
+		for _, r := range reports {
+			fmt.Print(r.String())
+			if !r.Complete() {
+				bad++
+			}
+		}
+		fmt.Printf("\n%d cache file(s) checked, %d would be loaded again in full. Nothing was changed.\n", len(reports), bad)
+		if bad > 0 {
+			os.Exit(1)
+		}
 	case "status":
 		usernames, err := auth.ListUsernames()
 		if err != nil {
