@@ -37,3 +37,30 @@ credentials or session storage, read `docs/design/unattended-reauth.md` first.
   `GOTOOLCHAIN=local`. `go test` runs repo code; CI does that.
 - When pinning an action or tag by SHA, use the commit SHA, not the annotated tag
   object's SHA.
+
+## To do
+
+Both are optional; neither blocks anything that runs today.
+
+1. **Count the load summaries per calendar.** The repair, unverified-signature and
+   record-versus-data counters (`serving` in `caldav/encodable.go`, `unverifiedSignatures`
+   in `caldav/caldav.go`) are process-wide and are written out as one line at the end of
+   whichever load finishes first (`logServing`, `logUnverifiedSignatures` in `loadCache`).
+   With several calendars loading at once, the counts are right but the `cache <id>:` label
+   on the line is the wrong calendar. Fix by collecting per load (a collector created in
+   `loadCache` and passed down through `getCalendarObject`, `toIcalCalendar` and
+   `readEventCard`), not by locking the globals harder. Keep the lines free of event text.
+
+2. **Edit a recurring series that has edited occurrences from Thunderbird.** Today
+   `PutCalendarObject` refuses (HTTP 403, `errSeriesEdit`) any write that would split or
+   merge such a series: a resource with several VEVENTs, a series that has occurrences, or a
+   write that turns a series into an occurrence or back. Reads and deletes already treat the
+   series as one resource (`caldav/series.go`; a delete removes the occurrences first, the
+   series last). Writing needs a design note in `docs/design/` that the owner approves before
+   any code: how a whole-series PUT maps onto Proton events (the series and one event per
+   RECURRENCE-ID), writing only the components that changed, deleting an occurrence that is
+   gone from the PUT, what happens on a failure halfway (events are independent in Proton),
+   and a dry run. Test it with a fake Proton server; never against a real account. Remember
+   `UpdateCalendarEvent` mutates the event it is given (pass it a clone, see
+   `PutCalendarObject`).
+
