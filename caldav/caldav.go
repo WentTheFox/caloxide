@@ -54,6 +54,9 @@ type backend struct {
 	// cacheKey seals the calendar cache on disk; see sealed.go. Nil means no cache is saved.
 	cacheKey *[32]byte
 
+	calListOnce sync.Once
+	calList     *calendarListCache // Proton's calendar list, kept briefly (see calendarlist.go)
+
 	standby *standbyState
 	cycles  cycles
 	core    func() // wakes the account event loop; set by WireCoreLoop
@@ -342,7 +345,7 @@ func (b *backend) CalendarHomeSetPath(ctx context.Context) (string, error) {
 }
 
 func (b *backend) ListCalendars(ctx context.Context) ([]caldav.Calendar, error) {
-	protonCals, err := b.c.ListCalendars()
+	protonCals, err := b.protonCalendars()
 	if err != nil {
 		return nil, fmt.Errorf("caldav/ListCalendars: error listing ProtonMail calendars: (%w)", err)
 	}
@@ -372,7 +375,7 @@ func (b *backend) ListCalendars(ctx context.Context) ([]caldav.Calendar, error) 
 }
 
 func (b *backend) GetCalendar(ctx context.Context, path string) (*caldav.Calendar, error) {
-	protonCals, err := b.c.ListCalendars()
+	protonCals, err := b.protonCalendars()
 	if err != nil {
 		return nil, fmt.Errorf("caldav/GetCalendar: error listing ProtonMail calendars: (%w)", err)
 	}

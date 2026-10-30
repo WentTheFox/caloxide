@@ -236,6 +236,13 @@ inbound poll, Proton rate limiting us, (optionally) a long calendar load, a fail
   calendar is polled once, so what it reads is as fresh as normally, and polling returns to
   30 s. It watches CalDAV requests only, so it switches itself off when `caloxide serve` also
   runs IMAP, SMTP or CardDAV.
+- **Checking a calendar does not ask Proton.** A client's change-token check (about once per
+  calendar per refresh) needs the calendar's name and keys from Proton's calendar list. That list
+  is reused for 30 seconds, shared by checks that arrive together, fetched fresh when Proton's
+  account events report a calendar being added, removed or changed, and an older copy (up to an
+  hour) keeps checks working while Proton cannot be asked. The change token itself comes from the
+  local cache on every call, so a change to an event still shows at once. Six calendars at a
+  one-minute refresh therefore cost about two requests a minute instead of six.
 - **Rate limits are shared.** Proton does not publish its limits, so every request to the
   API goes through one budget for the whole process, whichever calendar it is for: at most
   four request starts a second, and when Proton answers `429` (or `503` with `Retry-After`)

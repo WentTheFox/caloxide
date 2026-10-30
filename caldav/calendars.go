@@ -11,7 +11,7 @@ import (
 // of a deleted (or unshared) calendar keeps failing and alerting indefinitely.
 // New calendars need nothing here, their poller starts on first use (cacheFor).
 func (b *backend) reconcileCalendars() {
-	cals, err := b.c.ListCalendars()
+	cals, err := b.calendarList().refresh() // fresh on purpose: a calendar was just added, removed or changed
 	if err != nil {
 		// Not fatal: the next calendar change in the core loop tries again.
 		log.Printf("calendars: could not re-list after a calendar change: %v", err)
