@@ -141,7 +141,7 @@ Run `caloxide -h` for all of them and the commands (`auth`, `caldav`, `verify`, 
 
 Alerts are sent for: a rejected CalDAV login (usually an expired session), a stalled
 inbound poll, Proton rate limiting us, a failed calendar write, a handler panic, a re-login that needs you, and
-(macOS service only) a crash.
+(when run as a service) a crash.
 
 ## Sync behaviour
 
@@ -214,12 +214,33 @@ gh attestation verify caloxide_vX.Y.Z_linux_amd64 --repo WentTheFox/caloxide
 
 `.github/scripts/build-release.sh <version>` builds the same binaries locally.
 
-## Running as a macOS service
+## Running as a service
 
-`./service/install.sh` builds caloxide and installs a per-user LaunchAgent
-(`com.wentthefox.caloxide.caldav`) that starts at login and restarts on a crash; logs go
-to `~/Library/Logs/caloxide/caldav.log`. `./service/uninstall.sh` removes it. Stop the
-service before running a manual session, since only one process can bind `127.0.0.1:8081`.
+Both installers run the server as you (no root), restart it if it crashes, and expect a
+prior `caloxide auth <address>`. Alert settings come from the environment when you run
+them: `CALOXIDE_DISCORD_WEBHOOK_URL`, `CALOXIDE_APPRISE_URL`, `CALOXIDE_APPRISE_URLS`.
+
+**Linux (systemd).** `./service/install-systemd.sh` builds caloxide (or installs a
+downloaded release binary: `CALOXIDE_BINARY=/path/to/caloxide ./service/install-systemd.sh`)
+and installs `caloxide-caldav.service` as a user unit. Add `--linger` to start it at boot
+without a login. The unit sandboxes the process (read-only filesystem except the state
+directory, no new privileges, IP and unix sockets only), keeps alert settings in an
+owner-only `~/.config/caloxide.env`, and runs a small script after every stop that alerts
+if the process was killed by a signal or the OOM killer, which it cannot report itself.
+
+```bash
+systemctl --user status caloxide-caldav.service
+journalctl --user -u caloxide-caldav.service -f
+./service/uninstall-systemd.sh          # --purge also removes the binary and alert settings
+```
+
+**macOS (launchd).** `./service/install.sh` builds caloxide and installs a LaunchAgent
+(`tf.went.caloxide.caldav`) that starts at login; logs go to
+`~/Library/Logs/caloxide/caldav.log`. `./service/uninstall.sh` removes it.
+
+Only one process can bind `127.0.0.1:8081`, so stop the service before a manual session
+(`systemctl --user stop caloxide-caldav.service`, or `launchctl unload` the agent). To
+change the port or host, add flags to the unit with `systemctl --user edit`.
 
 ## How it works
 

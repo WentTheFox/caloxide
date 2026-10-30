@@ -18,7 +18,7 @@ APP_DIR="$HOME/Library/Application Support/caloxide"
 BIN_DIR="$APP_DIR/bin"
 LOG_DIR="$HOME/Library/Logs/caloxide"
 LA_DIR="$HOME/Library/LaunchAgents"
-LABEL="com.wentthefox.caloxide.caldav"
+LABEL="tf.went.caloxide.caldav"
 PLIST="$LA_DIR/$LABEL.plist"
 LOG="$LOG_DIR/caldav.log"
 

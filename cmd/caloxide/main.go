@@ -150,7 +150,7 @@ func startVerification(m *auth.Manager) http.Handler {
 		log.Printf("verify: control socket unavailable: %v", err)
 		return nil
 	}
-	log.Printf("verify: if Proton asks for a CAPTCHA, run `caloxide verify` inside the container for a one-time link")
+	log.Printf("verify: if Proton asks for a CAPTCHA, run `caloxide verify` (inside the container, if it runs in one) for a one-time link")
 	return webverify.Handler(m)
 }
 

@@ -5,7 +5,7 @@
 
 set -eu
 
-LABEL="com.wentthefox.caloxide.caldav"
+LABEL="tf.went.caloxide.caldav"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 BIN_DIR="$HOME/Library/Application Support/caloxide/bin"
 

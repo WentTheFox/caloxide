@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// The control socket is how `caloxide verify`, run inside the container (for
+// The control socket is how `caloxide verify`, run where the server runs (inside the container, for
 // example with `docker exec`), asks the running bridge to open a verification
 // window. It is a unix socket in the bridge's private config directory, mode 0600,
 // so only the bridge's own user can use it. It is not a network service.

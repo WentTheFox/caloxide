@@ -74,7 +74,7 @@ func (e *SuspendedError) Error() string {
 type HumanVerificationError struct{ Username string }
 
 func (e *HumanVerificationError) Error() string {
-	return fmt.Sprintf("Proton wants human verification, which cannot be done unattended; run `caloxide verify` inside the container for a one-time link, or `caloxide auth %s` on a workstation and restart the bridge", e.Username)
+	return fmt.Sprintf("Proton wants human verification, which cannot be done unattended; run `caloxide verify` (inside the container, if it runs in one) for a one-time link, or `caloxide auth %s` on a workstation and restart the bridge", e.Username)
 }
 
 // secrets are the static credentials a login needs. They come from the decrypted
