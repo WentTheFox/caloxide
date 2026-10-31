@@ -367,6 +367,7 @@ func (b *backend) ListCalendars(ctx context.Context) ([]caldav.Calendar, error) 
 			Path:        homeSetPath + cal.ID,
 			Name:        calView.Name,
 			Description: calView.Description,
+			Color:       calView.Color,
 			CTag:        b.cacheCTag(cal.ID),
 		}
 		cals[i] = caldavCal
@@ -402,6 +403,7 @@ func (b *backend) GetCalendar(ctx context.Context, path string) (*caldav.Calenda
 			Path:        homeSetPath + cal.ID,
 			Name:        calView.Name,
 			Description: calView.Description,
+			Color:       calView.Color,
 			CTag:        b.cacheCTag(cal.ID),
 		}
 

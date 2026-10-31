@@ -575,6 +575,9 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
 			return &getCTag{CTag: cal.CTag}, nil
 		}
 	}
+	if cal.Color != "" {
+		props[calendarColorName] = internal.PropFindValue(&calendarColor{Color: cal.Color})
+	}
 
 	// TODO: CALDAV:calendar-timezone, CALDAV:supported-calendar-component-set, CALDAV:min-date-time, CALDAV:max-date-time, CALDAV:max-instances, CALDAV:max-attendees-per-instance
 

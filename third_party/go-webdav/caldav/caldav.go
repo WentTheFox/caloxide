@@ -74,6 +74,9 @@ type Calendar struct {
 	// the collection so clients can detect changes by polling instead of walking
 	// every object. Empty disables the property.
 	CTag string
+	// Color is the calendar colour (e.g. "#8080FF"), advertised as the Apple
+	// calendar-color property so clients can use it. Empty disables the property.
+	Color string
 }
 
 type CalendarCompRequest struct {

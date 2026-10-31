@@ -23,5 +23,9 @@ Minimal, additive, and backwards-compatible:
 - `caldav/server.go` — in `propFindCalendar`, advertise `getctag` when
   `Calendar.CTag` is non-empty.
 
+- `caldav/caldav.go`, `caldav/elements.go`, `caldav/server.go` — added a `Color`
+  field to `Calendar` and advertise it as the Apple `calendar-color` property
+  (`http://apple.com/ns/ical/`) when non-empty, so clients can inherit the colour.
+
 This is upstreamable; if accepted upstream the fork can be dropped and the
 `replace` directive removed.

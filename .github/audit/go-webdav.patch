@@ -1,8 +1,8 @@
 diff --git a/a/caldav/caldav.go b/b/caldav/caldav.go
-index f4862c2..4c9e296 100644
+index f4862c2..ff6f727 100644
 --- a/a/caldav/caldav.go
 +++ b/b/caldav/caldav.go
-@@ -69,6 +69,11 @@ type Calendar struct {
+@@ -69,6 +69,14 @@ type Calendar struct {
  	Description           string
  	MaxResourceSize       int64
  	SupportedComponentSet []string
@@ -11,19 +11,24 @@ index f4862c2..4c9e296 100644
 +	// the collection so clients can detect changes by polling instead of walking
 +	// every object. Empty disables the property.
 +	CTag string
++	// Color is the calendar colour (e.g. "#8080FF"), advertised as the Apple
++	// calendar-color property so clients can use it. Empty disables the property.
++	Color string
  }
  
  type CalendarCompRequest struct {
 diff --git a/a/caldav/elements.go b/b/caldav/elements.go
-index aed6050..736b899 100644
+index aed6050..8e1894b 100644
 --- a/a/caldav/elements.go
 +++ b/b/caldav/elements.go
-@@ -23,8 +23,22 @@ var (
+@@ -23,8 +23,34 @@ var (
  
  	calendarName     = xml.Name{namespace, "calendar"}
  	calendarDataName = xml.Name{namespace, "calendar-data"}
 +
 +	getCTagName = xml.Name{calendarserverNamespace, "getctag"}
++
++	calendarColorName = xml.Name{appleNamespace, "calendar-color"}
  )
  
 +// calendarserverNamespace is the CalendarServer extension namespace, home of the
@@ -38,14 +43,24 @@ index aed6050..736b899 100644
 +	CTag    string   `xml:",chardata"`
 +}
 +
++// appleNamespace is the Apple iCal extension namespace, home of calendar-color.
++const appleNamespace = "http://apple.com/ns/ical/"
++
++// calendarColor is the Apple calendar-color property, read by Thunderbird, Apple
++// Calendar, DAVx5 and others to colour a calendar.
++type calendarColor struct {
++	XMLName xml.Name `xml:"http://apple.com/ns/ical/ calendar-color"`
++	Color   string   `xml:",chardata"`
++}
++
  // https://tools.ietf.org/html/rfc4791#section-6.2.1
  type calendarHomeSet struct {
  	XMLName xml.Name      `xml:"urn:ietf:params:xml:ns:caldav calendar-home-set"`
 diff --git a/a/caldav/server.go b/b/caldav/server.go
-index 1a25479..efcd164 100644
+index 1a25479..75e6afd 100644
 --- a/a/caldav/server.go
 +++ b/b/caldav/server.go
-@@ -570,6 +570,11 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
+@@ -570,6 +570,14 @@ func (b *backend) propFindCalendar(ctx context.Context, propfind *internal.PropF
  			Size: cal.MaxResourceSize,
  		})
  	}
@@ -53,6 +68,9 @@ index 1a25479..efcd164 100644
 +		props[getCTagName] = func(*internal.RawXMLValue) (interface{}, error) {
 +			return &getCTag{CTag: cal.CTag}, nil
 +		}
++	}
++	if cal.Color != "" {
++		props[calendarColorName] = internal.PropFindValue(&calendarColor{Color: cal.Color})
 +	}
  
  	// TODO: CALDAV:calendar-timezone, CALDAV:supported-calendar-component-set, CALDAV:min-date-time, CALDAV:max-date-time, CALDAV:max-instances, CALDAV:max-attendees-per-instance

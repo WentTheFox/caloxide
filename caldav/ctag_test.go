@@ -79,3 +79,43 @@ func TestCTagIsOmittedWhenThereIsNone(t *testing.T) {
 		t.Errorf("an empty CTag must be reported as not found:\n%s", body)
 	}
 }
+
+const colorQuery = `<?xml version="1.0"?>
+<propfind xmlns="DAV:" xmlns:ic="http://apple.com/ns/ical/">
+  <prop><ic:calendar-color/><displayname/></prop>
+</propfind>`
+
+type colorBackend struct{ ctagBackend }
+
+func (b colorBackend) cal() wdcaldav.Calendar {
+	c := b.ctagBackend.cal()
+	c.Color = "#8080FF"
+	return c
+}
+func (b colorBackend) ListCalendars(context.Context) ([]wdcaldav.Calendar, error) {
+	return []wdcaldav.Calendar{b.cal()}, nil
+}
+func (b colorBackend) GetCalendar(context.Context, string) (*wdcaldav.Calendar, error) {
+	c := b.cal()
+	return &c, nil
+}
+
+// Clients inherit the calendar colour from Apple's calendar-color property.
+func TestVendoredHandlerAdvertisesTheCalendarColor(t *testing.T) {
+	code, body := propfind(t, colorBackend{}, "/caldav/calendars/", "1", colorQuery)
+	if code != http.StatusMultiStatus {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	for _, want := range []string{"calendar-color", "#8080FF", "http://apple.com/ns/ical/"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response lacks %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestCalendarColorIsOmittedWhenThereIsNone(t *testing.T) {
+	_, body := propfind(t, ctagBackend{}, "/caldav/calendars/cal1/", "0", colorQuery)
+	if strings.Contains(body, "#") || !strings.Contains(body, "404") {
+		t.Errorf("an empty colour must be reported as not found:\n%s", body)
+	}
+}

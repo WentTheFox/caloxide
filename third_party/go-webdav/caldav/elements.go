@@ -25,6 +25,8 @@ var (
 	calendarDataName = xml.Name{namespace, "calendar-data"}
 
 	getCTagName = xml.Name{calendarserverNamespace, "getctag"}
+
+	calendarColorName = xml.Name{appleNamespace, "calendar-color"}
 )
 
 // calendarserverNamespace is the CalendarServer extension namespace, home of the
@@ -37,6 +39,16 @@ const calendarserverNamespace = "http://calendarserver.org/ns/"
 type getCTag struct {
 	XMLName xml.Name `xml:"http://calendarserver.org/ns/ getctag"`
 	CTag    string   `xml:",chardata"`
+}
+
+// appleNamespace is the Apple iCal extension namespace, home of calendar-color.
+const appleNamespace = "http://apple.com/ns/ical/"
+
+// calendarColor is the Apple calendar-color property, read by Thunderbird, Apple
+// Calendar, DAVx5 and others to colour a calendar.
+type calendarColor struct {
+	XMLName xml.Name `xml:"http://apple.com/ns/ical/ calendar-color"`
+	Color   string   `xml:",chardata"`
 }
 
 // https://tools.ietf.org/html/rfc4791#section-6.2.1
