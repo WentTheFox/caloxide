@@ -88,16 +88,16 @@ Or run the binary directly: `caloxide caldav` (listens on `127.0.0.1:8081`).
 
 ### 3. Add the calendar in Thunderbird
 
-Add a network calendar of type **CalDAV** using the direct calendar URL:
+Add a network calendar of type **CalDAV** and enter just the service address:
 
 ```
-http://127.0.0.1:8081/caldav/calendars/<your-calendar-id>
+http://127.0.0.1:8081
 ```
 
-User = your Proton address, password = the bridge password. Enable **Prefer client-side
-email scheduling** and set the refresh interval to 1 minute. The first sync of a big
-calendar takes minutes; the server answers `503` until it is loaded. The base CalDAV
-endpoint lists your calendars, and the ID is the last path segment of a calendar's href.
+Thunderbird discovers your calendars from there. User = your Proton address, password =
+the bridge password. Enable **Prefer client-side email scheduling** and set the refresh
+interval to 1 minute. The first sync of a big
+calendar takes minutes; the server answers `503` until it is loaded.
 
 The server speaks **plain HTTP with Basic auth**, and that password is also the key to
 your stored session. Keep it on `127.0.0.1`, or put it behind a TLS reverse proxy with a
