@@ -26,6 +26,13 @@ const calendarPushFallbackInterval = 5 * time.Minute
 // seconds helps nobody and makes this client look abusive to Proton.
 const maxPollBackoff = 10 * time.Minute
 
+// pollFailuresBeforeAlert is how many polls in a row must fail before an alert is
+// sent: with the backoff above that is about 2 to 3 minutes of continuous failure.
+const pollFailuresBeforeAlert = 3
+
+// maxAlertErrLen caps how much of the error text goes into the alert.
+const maxAlertErrLen = 160
+
 // pollCalendar drives Proton's calendar event loop
 // (GET /calendar/v1/{calID}/modelevents/{cursor}) to keep the decrypted cache
 // live. It seeds a cursor at the current head, then polls for changes and patches
@@ -45,6 +52,7 @@ func (b *backend) pollCalendar(calID string, wake <-chan struct{}, stop <-chan s
 
 	bo := backoff.New(calendarPollInterval, maxPollBackoff)
 	wait := b.pollInterval()
+	consecutiveFailures := 0
 	for {
 		// Sleep until the next scheduled poll or until Proton pushes a ping for this
 		// calendar, whichever comes first.
@@ -71,9 +79,14 @@ func (b *backend) pollCalendar(calID string, wake <-chan struct{}, stop <-chan s
 			}
 			evs, err := b.c.GetCalendarModelEvents(calID, cursor)
 			if err != nil {
-				log.Printf("poller %s: poll failed: %v", calID, err)
-				notify.Send("warning", "poller-poll", "caloxide: inbound poll failing",
-					fmt.Sprintf("Polling Proton's calendar event loop failed: %v. Inbound sync is stalled; this often means the Proton session needs refreshing.", err))
+				consecutiveFailures++
+				log.Printf("poller %s: poll failed (%d in a row): %v", calID, consecutiveFailures, err)
+				// A single dropped connection (Proton resets idle ones now and then) is
+				// retried by the backoff and fixes itself; only alert once it persists.
+				if consecutiveFailures >= pollFailuresBeforeAlert {
+					notify.Send("warning", "poller-poll", "caloxide: inbound poll failing",
+						fmt.Sprintf("Polling Proton's calendar event loop has failed %d times in a row (last error: %s). Inbound sync is stalled; this often means the Proton session needs refreshing.", consecutiveFailures, errTail(err, maxAlertErrLen)))
+				}
 				failed = true
 				break
 			}
@@ -103,9 +116,21 @@ func (b *backend) pollCalendar(calID string, wake <-chan struct{}, stop <-chan s
 			log.Printf("poller %s: next attempt in %s", calID, wait.Round(time.Second))
 		} else {
 			bo.Reset()
+			consecutiveFailures = 0
 			wait = b.pollInterval()
 		}
 	}
+}
+
+// errTail returns err's text, shortened to its last max runes. The cause (for
+// example "connection reset by peer") is at the end of a wrapped request error;
+// the start is the request URL, which is noise in an alert.
+func errTail(err error, max int) string {
+	r := []rune(err.Error())
+	if len(r) <= max {
+		return string(r)
+	}
+	return "…" + string(r[len(r)-max:])
 }
 
 // applyModelEvents patches a batch of calendar-loop changes into the cache. The
